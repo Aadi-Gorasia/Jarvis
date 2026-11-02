@@ -31,3 +31,14 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r"[*#`>~]+", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def notify(title: str, message: str) -> None:
+    """macOS notification banner (silently ignored if unavailable)."""
+    import subprocess
+    esc = lambda x: x.replace("\\", "\\\\").replace('"', '\\"')[:200]
+    try:
+        subprocess.run(["osascript", "-e", f'display notification "{esc(message)}" with title "{esc(title)}"'],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass

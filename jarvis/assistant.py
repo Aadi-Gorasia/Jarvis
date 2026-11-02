@@ -1,10 +1,12 @@
 """The always-on loop: wake word -> record -> transcribe -> Gemini (+tools) -> speak -> follow-ups."""
 import logging
+import queue
 import re
 import time
 
 from google import genai
 
+from .agents import AgentManager, ApprovalBroker
 from .audio import Microphone, Recorder, WakeWord, play_sound
 from .brain import Brain
 from .memory import Memory
@@ -34,9 +36,33 @@ class Jarvis:
         self.speaker = Speaker(cfg, self.client, self.mic, mute=text_mode)
         self.stt = Transcriber(cfg, self.client)
 
+        self.text_mode = text_mode
+        self.announce_q: "queue.Queue[str]" = queue.Queue()
+        self.broker = ApprovalBroker(cfg, self._announce)
+        self.manager = AgentManager(cfg, self.client, self.memory, self._announce)
+
         ctx.cfg, ctx.client, ctx.speaker, ctx.memory = cfg, self.client, self.speaker, self.memory
+        ctx.manager, ctx.broker, ctx.announce = self.manager, self.broker, self._announce
         ctx.confirm = self._confirm_text if text_mode else self._confirm_voice
-        self.brain = Brain(cfg, self.client, self.memory, get_tools(cfg))
+        self.brain = Brain(cfg, self.client, self.memory, get_tools(cfg), self.manager)
+
+    # ── messages from background agents ──────────────────────────
+    def _announce(self, text: str) -> None:
+        """Agents call this from their threads. Voice mode waits for a quiet moment; text mode prints."""
+        if self.text_mode:
+            self.speaker.say(text)
+        else:
+            self.announce_q.put(text)
+
+    def _flush_announcements(self) -> bool:
+        spoke = False
+        while True:
+            try:
+                msg = self.announce_q.get_nowait()
+            except queue.Empty:
+                return spoke
+            self.speaker.say(msg)
+            spoke = True
 
     # ── confirmation for risky tools ─────────────────────────────
     def _confirm_voice(self, prompt: str) -> bool:
@@ -58,7 +84,7 @@ class Jarvis:
                 self.mic.open()
                 log.info("Listening for the wake word (%s)...", self.cfg.wake.model)
                 while True:
-                    wake.wait(self.mic)
+                    wake.wait(self.mic, self._flush_announcements)
                     self.session()
             except KeyboardInterrupt:
                 raise

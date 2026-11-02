@@ -1,95 +1,84 @@
-# JARVIS: an always-on Gemini voice assistant for macOS
+# JARVIS: an always-on Gemini voice assistant with a team of background agents (macOS)
 
-Say **"Hey Jarvis"** from anywhere. It starts at login, runs invisibly in the background (no app, no window, no Dock icon), listens locally for its wake word, then talks to Google Gemini and controls your Mac through tools.
+Say **"Hey Jarvis"** from anywhere. It starts at login and runs invisibly (no app, no window). You only ever talk to Jarvis. For real work he hands jobs to specialist agents that run **in parallel in the background**, then tells you when each one finishes.
 
 ```
-mic ─▶ wake word (local, openWakeWord) ─▶ record until you pause ─▶ Gemini transcribes
-                                                                          │
-speaker ◀─ macOS voice / Gemini TTS ◀─ Gemini answers, calling tools ◀────┘
+                         ┌────────────── you: "Hey Jarvis, ..." ──────────────┐
+mic ─▶ wake word (local) ─▶ Jarvis (Gemini): chats, quick actions, delegates ─▶ voice
+                                   │ delegate_task            ▲ "task 3 finished..."
+                    ┌──────────────┼──────────────┐           │
+                 coder        spreadsheet     researcher ... operator  (+ agents you create)
+                 each = its own Gemini loop with tools: files, shell, Python, Excel, web, screen control
 ```
-
-**Privacy:** the microphone stream is processed on your Mac. Audio is sent to Gemini only *after* the wake word fires, and only for that sentence. Screenshots are taken only when you ask about your screen.
 
 ## Install (macOS, Python 3.10+)
 
 1. Get a free API key at https://aistudio.google.com
-2. In Terminal:
-   ```
-   cd jarvis
-   ./install.sh
-   ```
-   It builds a virtualenv, installs packages, downloads the wake-word model, asks for your key, triggers the microphone permission prompt, and registers a LaunchAgent. Jarvis is live when it finishes and returns after every restart or login.
+2. `cd jarvis && ./install.sh` (builds the environment, downloads the wake-word model, asks for your key, asks for mic permission, registers the auto-start service).
+3. Grant the permissions macOS asks for over time: Microphone, and for the agents' hands: **Accessibility** and **Screen Recording** (System Settings > Privacy & Security) for the app that launches Jarvis, plus Automation prompts the first time an agent controls an app.
 
-## Try it
+## What you can say
 
-- "Hey Jarvis, what's the weather?" / "...what's on my screen?" / "...set a timer for ten minutes"
-- "...open Spotify and pause the music" / "...find my resume" / "...turn the volume to 30"
-- "...remember that my sister's name is Meera" (it remembers across restarts)
-- After an answer you can keep talking for a few seconds without repeating the wake word. Say "that's all" to end.
+- "Hey Jarvis, finish the German vocabulary sheet in my Documents folder." -> spreadsheet agent finds it, inspects it, fills every row, verifies, backs the original up first.
+- "Write a Python script that renames my screenshots by date, and at the same time research the best laptops for video editing, and draft a cover letter." -> three agents work at once.
+- "What's everyone doing?" -> task list with each agent's latest step. "Cancel task 2."
+- "Create an agent called Tutor that makes German flashcards and quizzes from any file I give it." -> permanent new agent.
+- When an agent needs your OK, Jarvis announces it. Say **"approve"** or **"deny"**.
+- Everything from the first version still works: weather, timers, music, volume, screen description, notes, memory ("remember that...").
 
-Built-in tools: time, weather (no key needed), Google-grounded web search, open apps/URLs, volume, music control, system status, timers, notifications, clipboard, screen description (vision), file search/read/list, notes, long-term memory, and an optional confirmed-by-voice shell command.
+Built-in agents: **coder**, **spreadsheet**, **researcher**, **writer**, **operator** (does anything a person can: scripts, AppleScript, mouse and keyboard). Agents can spawn helper agents (depth-limited). Each task's report, log and result are saved to `~/Jarvis Workspace/tasks/`.
+
+## How much freedom the agents have (`agents.permission_mode`)
+
+| Mode | Behaviour |
+|---|---|
+| `trusted` (default) | Agents work freely. Every existing file is **backed up to `~/Jarvis Workspace/backups/`** before any change, and deletes go to the Trash. They pause for your OK only on risky things: deleting outside the workspace, killing processes, uploading data, sending mail/messages, changing system settings. |
+| `ask` | You approve every write, command and screen action. Good for the first few days. |
+| `full` | No approval prompts at all. |
+
+**Always blocked, in every mode:** `sudo`, disk erasing, shutdown, `curl | sh`, and anything touching SSH keys, cloud credentials, keychains, browser profiles or Jarvis's own `.env`. This is on purpose: agents read web pages and files, and those can contain hidden instructions ("prompt injection"). The hard block means even a hijacked agent cannot steal your keys or wreck the machine.
+
+Honest limits: `run_python` and `shell` are policed by pattern checks, not a sandbox, so a determined script can get around them. If you want real isolation, run Jarvis under a separate macOS user account. Gemini can also simply be wrong, which is why edits are backed up and agents verify their work. Emergency stop for mouse/keyboard automation: slam the mouse into the top-left screen corner.
 
 ## Manage it
 
 ```
 ./jarvisctl.sh status | logs | restart | stop | start
-./jarvisctl.sh text     # chat by keyboard, no mic needed (good first test of your API key)
+./jarvisctl.sh text     # type to Jarvis instead of speaking (best first test)
 ./jarvisctl.sh run      # foreground with verbose logs
 ./jarvisctl.sh mic      # live mic levels, to tune audio.min_rms
 ./uninstall.sh          # remove auto-start
 ```
-Logs: `~/Library/Logs/jarvis.log`. Memory database and notes: `~/.jarvis/`.
+Logs: `~/Library/Logs/jarvis.log`. Memory, agents and task records: `~/.jarvis/`. Running tasks do not survive a restart; finished ones are kept.
 
 ## Configure (`config.yaml`, then `./jarvisctl.sh restart`)
 
 | Want | Change |
 |---|---|
-| Different/newer Gemini model | `gemini.model` (any model with function calling) |
-| Nicer voice | `tts.engine: gemini` (falls back to the Mac voice if it fails), or change `tts.mac_voice` |
-| Triggers by accident / misses you | `wake.threshold` up / down |
-| Cuts you off, or never stops listening | `audio.silence_seconds`, `audio.min_rms` |
-| Home city for weather | `assistant.home_city` |
-| Let it run terminal commands | `tools.allow_shell: true` (it asks you to say "yes" every time) |
-| Disable a tool | `tools.disabled: [describe_screen]` |
+| Newer Gemini model | `gemini.model`, `agents.model` |
+| More/fewer agents at once | `agents.max_concurrent` (Gemini rate limits apply; the free tier is tight) |
+| Agents work longer per task | `agents.max_steps` |
+| Safer / freer agents | `agents.permission_mode` |
+| Nicer voice | `tts.engine: gemini` or `tts.mac_voice` |
+| Wake word too eager / deaf | `wake.threshold` |
 
-## Add your own tool
-
-Add a function in `jarvis/tools/` (or a new file imported in `tools/__init__.py`):
-
-```python
-from .base import tool
-
-@tool
-def lights(room: str, on: bool) -> str:
-    """Turn the lights in a room on or off."""
-    ...  # call your smart-home API here
-    return f"{room} lights {'on' if on else 'off'}"
-```
-Type hints and the docstring are all Gemini needs. Restart and say "turn on the bedroom lights".
+Add your own tool: a type-hinted function with a docstring and `@tool` in `jarvis/tools/`, then list its name in a group in `tools/__init__.py`. Add an agent permanently by voice (`create_agent`) or in `agents/definitions.py`.
 
 ## Troubleshooting
 
-- **Wake word never fires, log says "Microphone is returning pure silence":** macOS is blocking the mic for the background process. Re-run `./install.sh app`, which installs a small `Jarvis.app` login item that gets its own microphone permission, and approve the prompt. Also check System Settings > Privacy & Security > Microphone.
-- **"describe screen" returns an error:** grant Screen Recording to the app that launched Jarvis (Terminal, or Jarvis.app).
-- **Media/volume/notification tools error:** approve the Automation prompts, or enable them under Privacy & Security > Automation.
-- **Model name rejected:** Google renames models often; copy a current name from https://ai.google.dev/gemini-api/docs/models into `config.yaml`.
-- **Echo or false wake-ups from speakers:** raise `wake.threshold` to 0.7, or use headphones.
-
-## Safety notes
-
-- Text from the web, files, clipboard and screen can contain hidden instructions. The system prompt tells Gemini to treat them as data, but keep `allow_shell` off unless you need it.
-- File tools are limited to `tools.allowed_roots` (your home folder by default) and refuse `.ssh`, `.aws`, `.gnupg` and Keychains.
+- **Log says "Microphone is returning pure silence":** run `./install.sh app` (installs a hidden Jarvis.app login item that gets its own mic permission).
+- **Spreadsheet edits lose charts or images:** `openpyxl` only keeps cell data and formatting. Ask for "save as a copy" on such files; originals are always backed up.
+- **Clicks do nothing:** grant Accessibility to the app that launched Jarvis.
+- **Model name rejected / 429 errors:** names change often (https://ai.google.dev/gemini-api/docs/models); lower `max_concurrent` if you hit rate limits.
 
 ## Layout
 
 ```
-config.yaml  .env  install.sh  uninstall.sh  jarvisctl.sh  requirements.txt
+config.yaml  .env  install.sh  uninstall.sh  jarvisctl.sh
 jarvis/
-  main.py        entry point and CLI flags
-  assistant.py   wake -> listen -> think -> speak loop
-  audio.py       mic stream, wake word, utterance recorder
-  speech.py      text-to-speech and Gemini transcription
-  brain.py       Gemini chat session, personality, tool calling
-  memory.py      SQLite facts + conversation log
-  tools/         system, files, web, memory tools
+  assistant.py   wake -> listen -> Jarvis -> speak loop, announcements from agents
+  brain.py       Jarvis's Gemini session, personality, delegation rules
+  agents/        definitions.py (roles), manager.py (parallel tasks), approvals.py
+  tools/         policy.py (permissions) + power/excel/gui/web/system/file/memory/agent tools
+  audio.py  speech.py  llm.py  memory.py  config.py  util.py
 ```

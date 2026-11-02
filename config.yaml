@@ -35,6 +35,16 @@ tts:
   gemini_style: "Say in a calm, dry, British butler tone"
 
 tools:
-  disabled: []               # tool names to switch off, e.g. [describe_screen, read_clipboard]
-  allow_shell: false         # lets Jarvis run terminal commands (always asks you to confirm first)
+  disabled: []               # Jarvis's own quick tools to switch off, e.g. [describe_screen, read_clipboard]
   allowed_roots: ["~"]       # folders file tools may touch
+
+agents:
+  permission_mode: "trusted"   # ask = approve every action | trusted = free, but risky actions need your OK | full = no prompts
+  workspace: "~/Jarvis Workspace"   # agents' default working folder; also holds backups/ and tasks/ reports
+  model: "gemini-3.8-flash"
+  thinking_level: "medium"     # blank = model default
+  max_concurrent: 6            # agents working at the same time (extra tasks queue)
+  max_steps: 40                # tool calls one agent may make per task
+  max_delegation_depth: 2      # agents may spawn helper agents this many levels deep
+  approval_timeout_seconds: 600
+  announce_completion: true    # Jarvis tells you when an agent finishes

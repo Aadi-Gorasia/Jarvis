@@ -134,19 +134,3 @@ def describe_screen(question: str = "Describe what is on the screen.") -> str:
         contents=[types.Part.from_bytes(data=data, mime_type="image/jpeg"), question],
     )
     return resp.text or "I couldn't make anything out."
-
-
-BLOCKED = ("sudo", "rm -rf /", "rm -rf ~", "mkfs", ":(){", "dd if=", "> /dev/", "shutdown", "reboot", "diskutil erase")
-
-
-@tool
-def run_shell_command(command: str) -> str:
-    """Run a terminal command on the Mac and return its output. The user must confirm out loud before it runs."""
-    if not ctx.cfg.tools.allow_shell:
-        return "Error: shell access is switched off in config.yaml (tools.allow_shell)."
-    if any(b in command for b in BLOCKED):
-        return "Error: that command is on the blocked list."
-    if not ctx.confirm(f"Shall I run this command: {command}?"):
-        return "The user declined, so nothing was run."
-    r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-    return ((r.stdout + r.stderr).strip() or "(no output)")[:2000]

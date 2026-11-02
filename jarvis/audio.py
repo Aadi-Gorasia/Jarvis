@@ -80,11 +80,16 @@ class WakeWord:
         self.model = Model(wakeword_models=[wake_cfg.model], inference_framework="onnx")
         self.threshold = wake_cfg.threshold
 
-    def wait(self, mic: Microphone) -> None:
+    def wait(self, mic: Microphone, on_idle=None) -> None:
+        """Block until the wake word. on_idle() runs every frame; if it returns True (it spoke), reset."""
         if hasattr(self.model, "reset"):
             self.model.reset()
         mic.flush()
         while True:
+            if on_idle is not None and on_idle():
+                if hasattr(self.model, "reset"):
+                    self.model.reset()
+                continue
             scores = self.model.predict(mic.read())
             if scores and max(scores.values()) >= self.threshold:
                 return
