@@ -29,88 +29,97 @@ LOCAL_TOOLS = {"get_current_time", "get_weather", "set_timer", "open_app", "open
 
 
 class Brain:
+    """Tries each provider in llm.jarvis_chain (e.g. gemini, openai, ollama). A provider that fails is
+    skipped for a while, so a quota or outage costs one slow answer, not one per sentence."""
+
     def __init__(self, cfg, client, memory, tools, manager=None):
-        self.manager = manager
-        self.cfg = cfg
-        self.client = client
-        self.memory = memory
-        self.tools = tools
-        self.chat = None
+        self.cfg, self.client, self.memory, self.tools, self.manager = cfg, client, memory, tools, manager
+        self.chain = list(getattr(cfg.llm, "jarvis_chain", None) or ["gemini", "ollama"])
+        self.chats: dict = {}       # provider -> live chat session
+        self.cooldown: dict = {}    # provider -> time before we try it again
+        self.seed: list = []        # recent turns to hand to a provider that joins mid-conversation
         self.last_used = 0.0
         self.use_thinking = bool(cfg.gemini.thinking_level)
-        self.local_until = 0.0
-        self.local = None          # on-device chat, used only when Gemini is unavailable
-        self.backup_until = 0.0   # while set, use the backup model (primary was overloaded)
 
-    def _system_prompt(self) -> str:
+    # ── prompts and sessions ─────────────────────────────────────
+    def _system_prompt(self, with_history: bool = False) -> str:
         facts = self.memory.all_facts()
         facts_txt = "\n".join(f"- {t}: {d}" for t, d in facts) or "(nothing yet)"
         user = self.cfg.assistant.user_name
         address = f" Address the user as \"{user}\"." if user else ""
-        return SYSTEM_PROMPT.format(
+        prompt = SYSTEM_PROMPT.format(
             name=self.cfg.assistant.name, address=address,
             agents=self.manager.describe_agents() if self.manager else "(none)",
             now=datetime.now().strftime("%A, %d %B %Y, %I:%M %p"), facts=facts_txt,
         )
+        if with_history and self.seed:
+            lines = "\n".join(f"- {r}: {t[:200]}" for r, t in self.seed)
+            prompt += f"\nThe conversation so far (continue it naturally):\n{lines}"
+        return prompt
 
-    def _model(self) -> str:
-        backup = self.cfg.gemini.fallback_model
-        return backup if backup and time.time() < self.backup_until else self.cfg.gemini.model
+    def _available(self, provider: str) -> bool:
+        return {"gemini": bool(self.cfg.api_key), "openai": bool(self.cfg.openai_key), "ollama": True}.get(provider, False)
 
-    def _new_chat(self) -> None:
-        level = self.cfg.gemini.thinking_level if self.use_thinking else None
-        self.chat = llm.make_chat(self.client, self._model(), self._system_prompt(), self.tools, 8,
-                                  level, provider=self.cfg.llm.jarvis_provider, cfg=self.cfg)
+    def _chat(self, provider: str):
+        if provider not in self.chats:
+            tools = [t for t in self.tools if t.__name__ in LOCAL_TOOLS] if provider == "ollama" else self.tools
+            system = self._system_prompt(with_history=True)
+            if provider == "ollama":
+                system += "\nYou are a small on-device backup model: keep answers very short."
+            level = self.cfg.gemini.thinking_level if provider == "gemini" and self.use_thinking else None
+            model = self.cfg.gemini.model if provider == "gemini" else None
+            self.chats[provider] = llm.make_chat(self.client, model, system, tools, 8, level,
+                                                 provider=provider, cfg=self.cfg)
+        return self.chats[provider]
 
+    # ── asking ───────────────────────────────────────────────────
     def ask(self, text: str) -> str:
         now = time.time()
         idle = now - self.last_used > self.cfg.assistant.session_idle_seconds
         if idle:
-            self.local, self.local_until = None, 0.0
+            self.chats.clear()
+        self.seed = [] if idle else self.memory.recent(8)
         self.last_used = now
         self.memory.log("user", text)
-        if now < self.local_until:   # Gemini failed a moment ago: don't wait on it again for every sentence
-            reply = self._local_answer(text)
-        else:
-            if self.chat is None or idle:
-                self._new_chat()
-            reply = self._send(text)
+
+        usable = [p for p in self.chain if self._available(p)]
+        ready = [p for p in usable if self.cooldown.get(p, 0) <= now] or usable  # all cooling? try anyway
+        reply = None
+        for provider in ready:
+            try:
+                reply = self._send(provider, text)
+                if provider != self.chain[0]:
+                    log.info("Answered by %s", provider)
+                break
+            except Exception as exc:
+                log.error("%s failed: %s", provider, str(exc)[:200])
+                self.chats.pop(provider, None)
+                self.cooldown[provider] = time.time() + self._cooldown_for(exc)
+        reply = reply or "I can't reach any of my language models right now."
         self.memory.log("assistant", reply)
         return reply
 
-    def _send(self, text: str, fixed_thinking: bool = False, tried_backup: bool = False) -> str:
+    def _send(self, provider: str, text: str) -> str:
+        chat = self._chat(provider)
         try:
-            # voice needs quick answers: only two short retries on an overloaded model
-            resp = llm.with_retry(lambda: self.chat.send_message(text), attempts=3, max_wait=4)
-            return (resp.text or "").strip() or "Done."
+            if provider == "ollama":
+                resp = chat.send_message(text)
+            else:  # voice needs quick answers: just two or three short tries
+                n, wait = (3, 4) if provider == "gemini" else (2, 3)
+                resp = llm.with_retry(lambda: chat.send_message(text), attempts=n, max_wait=wait)
         except Exception as exc:
-            log.error("Gemini request failed: %s", str(exc)[:200])
-            self.chat = None
-            if not fixed_thinking and self.use_thinking and "think" in str(exc).lower():
-                self.use_thinking = False
-                self._new_chat()
-                return self._send(text, True, tried_backup)
-            recoverable = llm.is_transient(exc) or isinstance(exc, llm.QuotaExhausted)
-            backup = self.cfg.gemini.fallback_model
-            if recoverable and backup and not tried_backup and self._model() != backup:
-                log.warning("Primary model unavailable; switching to %s for 5 minutes", backup)
-                self.backup_until = time.time() + 300
-                self._new_chat()
-                return self._send(text, fixed_thinking, True)
-            if recoverable and self.cfg.llm.jarvis_local_fallback:
-                return self._local_answer(text)
-            return "I'm having trouble reaching Gemini right now."
+            if provider == "gemini" and self.use_thinking and "think" in str(exc).lower():
+                self.use_thinking = False       # this model has no thinking_level; retry without it
+                self.chats.pop("gemini", None)
+                return self._send(provider, text)
+            raise
+        return (resp.text or "").strip() or "Done."
 
-    def _local_answer(self, text: str) -> str:
-        """Last resort: answer with the on-device model and a small set of tools."""
-        try:
-            if self.local is None:
-                log.warning("Gemini unavailable; answering with the on-device model")
-                tools = [t for t in self.tools if t.__name__ in LOCAL_TOOLS]
-                system = self._system_prompt() + "\nYou are running on a small backup model because the cloud model is unavailable. Keep answers very short."
-                self.local = llm.make_chat(self.client, None, system, tools, 6, None, provider="ollama", cfg=self.cfg)
-            self.local_until = time.time() + 120   # stay on-device for 2 minutes, then try Gemini again
-            return (self.local.send_message(text).text or "").strip() or "Done."
-        except Exception as exc:
-            log.error("on-device fallback failed: %s", str(exc)[:200])
-            return "I can't reach Gemini or the on-device model right now."
+    @staticmethod
+    def _cooldown_for(exc) -> int:
+        msg = str(exc)
+        if isinstance(exc, llm.QuotaExhausted) or "insufficient_quota" in msg:
+            return 1800     # out of quota: don't bother for 30 minutes
+        if any(k in msg for k in ("404", "NOT_FOUND", "401", "403", "invalid_api_key", "PERMISSION")):
+            return 3600     # wrong model name or key: needs a config fix
+        return 120          # overloaded or offline: try again in two minutes

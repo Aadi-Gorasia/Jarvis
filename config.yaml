@@ -9,7 +9,6 @@ assistant:
 
 gemini:
   model: "gemini-3.8-flash"            # main brain. Any Gemini model that supports function calling works
-  fallback_model: "gemini-2.5-flash"   # used for 5 minutes when the main model says "high demand" (503). Blank = off
   stt_model: "gemini-3.5-flash-lite"   # used to transcribe your voice
   thinking_level: "low"                # Gemini 3.x: minimal | low | medium | high. Blank = model default
 
@@ -43,16 +42,19 @@ stt:
   elevenlabs_model: "scribe_v1"
 
 llm:
-  jarvis_provider: "gemini"  # who Jarvis talks with: gemini | ollama. Jarvis has ~30 tools; small local models struggle with that
-  agents_provider: "ollama"  # who powers the background agents: ollama (on-device, no rate limits) | gemini
-  gemini_agents: [operator]  # agents that always use Gemini (they juggle many tools). Add "spreadsheet" if local struggles
-  jarvis_local_fallback: true # if Gemini is down or its quota is used up, Jarvis answers with the on-device model
-  fallback_to_gemini: true   # if the local model is down or errors out, retry the task on Gemini
+  # Which language models Jarvis uses, tried in order. A model that fails (quota, outage) is skipped for a while.
+  # Providers: gemini | openai (ChatGPT API, needs OPENAI_API_KEY) | ollama (on-device). Ones without a key are skipped.
+  jarvis_chain: ["gemini", "openai", "ollama"]
+  agents_provider: "ollama"  # first choice for the background agents: ollama | gemini | openai
+  gemini_agents: [operator]  # agents that always start on Gemini (they juggle many tools)
+  fallback_order: ["gemini", "openai", "ollama"]   # where agents go next if their first choice fails
+  openai_model: "gpt-5.4-mini"                      # any model your OpenAI key can use
+  openai_base_url: "https://api.openai.com/v1"      # works with any OpenAI-compatible service (OpenRouter, Groq...)
   ollama_url: "http://localhost:11434"
   ollama_model: "nemotron-3-nano:4b"   # fits a 16 GB Mac. The 30b version needs about 24 GB
   ollama_think: false        # true = better reasoning, much slower on a laptop
   ollama_context: 16384      # tokens of memory per conversation; higher uses more RAM
-  local_parallel: 1          # local tasks run at once. A laptop chip shares its speed between them
+  local_parallel: 1          # on-device tasks run at once. A laptop chip shares its speed between them
 
 tools:
   disabled: []               # Jarvis's own quick tools to switch off, e.g. [describe_screen, read_clipboard]

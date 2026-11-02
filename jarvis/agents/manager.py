@@ -1,4 +1,5 @@
 """Runs agent tasks in parallel background threads and tells Jarvis when they finish."""
+import contextlib
 import json
 import logging
 import threading
@@ -58,6 +59,7 @@ class Task:
 
 class AgentManager:
     def __init__(self, cfg, client, memory, announce):
+        self.gcfg = cfg
         self.cfg, self.client, self.memory, self.announce = cfg, client, memory, announce
         self.pool = ThreadPoolExecutor(max_workers=cfg.agents.max_concurrent, thread_name_prefix="agent")
         self.lock = threading.Lock()
@@ -135,24 +137,31 @@ class AgentManager:
             return "gemini"
         return self.cfg.llm.agents_provider
 
-    def _work(self, defn: AgentDef, task: Task) -> str:
-        engine = self._engine_for(task)
-        task.note(f"engine: {engine}")
-        try:
-            return self._run_engine(defn, task, engine)
-        except Exception as exc:
-            if engine == "ollama" and self.cfg.llm.fallback_to_gemini and not task.cancelled:
-                log.warning("task %s: local model failed (%s); retrying on Gemini", task.id, exc)
-                task.note(f"local model failed ({str(exc)[:100]}); retrying on Gemini")
-                return self._run_engine(defn, task, "gemini")
-            backup = self.cfg.gemini.fallback_model
-            if engine == "gemini" and backup and llm.is_transient(exc) and not task.cancelled:
-                log.warning("task %s: Gemini overloaded (%s); retrying on %s", task.id, str(exc)[:80], backup)
-                task.note(f"Gemini overloaded; retrying on {backup}")
-                return self._run_engine(defn, task, "gemini", model=backup)
-            raise
+    def _available(self, engine: str) -> bool:
+        return {"gemini": bool(self.gcfg.api_key), "openai": bool(self.gcfg.openai_key), "ollama": True}.get(engine, False)
 
-    def _run_engine(self, defn: AgentDef, task: Task, engine: str, model: str = "") -> str:
+    def _work(self, defn: AgentDef, task: Task) -> str:
+        """Run on the chosen engine; if it fails, move down llm.fallback_order (e.g. gemini, openai, ollama)."""
+        first = self._engine_for(task)
+        order = [first] + [e for e in (getattr(self.gcfg.llm, "fallback_order", None) or ["gemini", "openai", "ollama"])
+                           if e != first]
+        brief, last = task.brief, None
+        for engine in order:
+            if not self._available(engine):
+                continue
+            task.note(f"engine: {engine}")
+            try:
+                return self._run_engine(defn, task, engine, brief)
+            except Exception as exc:
+                if task.cancelled:
+                    raise
+                last = exc
+                log.warning("task %s: %s failed (%s)", task.id, engine, str(exc)[:120])
+                task.note(f"{engine} failed ({str(exc)[:100]}); trying the next engine")
+                brief = task.brief + "\n\n(An earlier attempt may have already done part of this. Check existing files and results before redoing anything.)"
+        raise last or RuntimeError("no language model is configured")
+
+    def _run_engine(self, defn: AgentDef, task: Task, engine: str, brief: str) -> str:
         acfg = self.cfg.agents
         facts = "\n".join(f"- {t}: {d}" for t, d in self.memory.all_facts()) or "(none)"
         system = AGENT_PROMPT.format(agent=defn.name, workspace=policy.workspace(), prompt=defn.prompt,
@@ -161,26 +170,29 @@ class AgentManager:
         level = acfg.thinking_level or None
 
         def start(think_level):
-            return llm.make_chat(self.client, model or acfg.model, system, tools, acfg.max_steps, think_level,
-                                 provider=engine, cfg=self.cfg)
+            return llm.make_chat(self.client, acfg.model, system, tools, acfg.max_steps, think_level,
+                                 provider=engine, cfg=self.gcfg)
 
         wrap_up = ("Stop using tools. In two to four plain sentences say what you completed, "
                    "where the output is, and what remains.")
-        if engine == "ollama":
-            with self.local_sem:  # a laptop chip can only think about so much at once
+        if engine != "gemini":
+            gate = self.local_sem if engine == "ollama" else contextlib.nullcontext()  # a laptop chip can't think in parallel
+            with gate:
                 chat = start(None)
-                text = chat.send_message(task.brief).text.strip()
-                if not text:
-                    text = chat.send_message(wrap_up).text.strip()
+
+                def send(msg):
+                    return llm.with_retry(lambda: chat.send_message(msg).text.strip(), attempts=4, max_wait=30)
+
+                text = send(brief) or send(wrap_up)
             return text or "Finished, but no summary was produced. Check the task log."
 
         chat = start(level)
         try:
-            resp = llm.with_retry(lambda: chat.send_message(task.brief))
+            resp = llm.with_retry(lambda: chat.send_message(brief))
         except Exception as exc:
             if level and "think" in str(exc).lower():
                 chat = start(None)
-                resp = llm.with_retry(lambda: chat.send_message(task.brief))
+                resp = llm.with_retry(lambda: chat.send_message(brief))
             else:
                 raise
         text = (resp.text or "").strip()

@@ -10,6 +10,9 @@ TRANSIENT = ("429", "RESOURCE_EXHAUSTED", "500", "503", "UNAVAILABLE", "INTERNAL
 
 
 def make_chat(client, model, system, tools, max_calls, thinking_level=None, provider="gemini", cfg=None):
+    if provider == "openai":
+        from .openai_llm import OpenAIChat
+        return OpenAIChat(cfg, system, tools, max_calls)
     if provider == "ollama":
         from .local_llm import LocalChat
         return LocalChat(cfg, system, tools, max_calls)

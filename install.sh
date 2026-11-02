@@ -37,6 +37,11 @@ if ! grep -q '^ELEVENLABS_API_KEY=' .env; then
   if [ -n "$EK" ]; then printf 'ELEVENLABS_API_KEY=%s\n' "$EK" >> .env; fi
 fi
 
+if ! grep -q '^OPENAI_API_KEY=' .env; then
+  read -r -s -p "OpenAI (ChatGPT API) key as a backup when Gemini is down (Enter to skip): " OK; echo
+  if [ -n "$OK" ]; then printf 'OPENAI_API_KEY=%s\n' "$OK" >> .env; fi
+fi
+
 MODEL="$(./venv/bin/python -c 'from jarvis.config import load_config; print(load_config().llm.ollama_model)')"
 if command -v ollama >/dev/null 2>&1; then
   echo "==> Downloading the on-device model ($MODEL), about 3 GB"

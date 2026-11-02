@@ -25,6 +25,12 @@ Unzip the new version next to the old one, copy your old `.env` file into it, th
 
 Put `ELEVENLABS_API_KEY=...` in `.env` (the installer asks for it). Jarvis then speaks with ElevenLabs (`tts.engine: elevenlabs`), streaming the audio so it starts almost immediately. Choose your voice by pasting its ID into `tts.elevenlabs_voice_id`. Replies longer than `tts.elevenlabs_max_chars` and any ElevenLabs failure fall back to the free Mac voice, so a quota or network problem never leaves Jarvis mute. Optional: `stt.provider: elevenlabs` uses ElevenLabs Scribe to transcribe you instead of Gemini. Test with `./jarvisctl.sh voice`.
 
+## Which AI models Jarvis uses (and what happens when one fails)
+
+`llm.jarvis_chain` lists the models Jarvis tries in order, by default **Gemini, then ChatGPT (OpenAI), then the on-device model**. If one hits a quota, a 503 "high demand", or a bad key or model name, Jarvis moves to the next and skips the failed one for a while (30 minutes for a used-up quota, 2 minutes for an outage), so you notice one slow answer, not a slow answer every time. The next model is given the recent conversation, so it carries on naturally. Background agents do the same through `llm.fallback_order`. Providers without a key are skipped silently.
+
+To add ChatGPT: create an API key at platform.openai.com (this is separate from a ChatGPT Plus subscription and bills per use, so add a few dollars of credit), then put `OPENAI_API_KEY=...` in `.env`. The default model is `gpt-5.4-mini`; change `llm.openai_model` if you want another. `llm.openai_base_url` also works with other OpenAI-compatible services such as OpenRouter or Groq.
+
 ## On-device models (no rate limits)
 
 Background agents run on a local model through [Ollama](https://ollama.com) by default (`llm.agents_provider: ollama`, model `nemotron-3-nano:4b`, about 3 GB, fine for a 16 GB Mac). Jarvis himself stays on Gemini: his chats are a handful of requests, and a small model struggles with his ~30 tools.
@@ -102,5 +108,5 @@ jarvis/
   brain.py       Jarvis's Gemini session, personality, delegation rules
   agents/        definitions.py (roles), manager.py (parallel tasks), approvals.py
   tools/         policy.py (permissions) + power/excel/gui/web/system/file/memory/agent tools
-  audio.py  speech.py  llm.py  local_llm.py  memory.py  config.py  util.py
+  audio.py  speech.py  llm.py  local_llm.py  openai_llm.py  memory.py  config.py  util.py
 ```

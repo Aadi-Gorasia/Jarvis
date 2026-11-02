@@ -51,3 +51,9 @@ class Memory:
         with self.lock:
             self.db.execute("INSERT INTO log VALUES(?,?,?)", (time.time(), role, text))
             self.db.commit()
+
+    def recent(self, n: int = 8):
+        """The last n chat messages, oldest first, as (role, text)."""
+        with self.lock:
+            rows = self.db.execute("SELECT role, text FROM log ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
+        return rows[::-1]
