@@ -124,6 +124,7 @@ def trash_path(path: str) -> str:
     p = policy.resolve(path)
     policy.guard_delete(p)
     trash = Path.home() / ".Trash"
+    trash.mkdir(exist_ok=True)
     dest = trash / p.name
     if dest.exists():
         dest = trash / f"{p.stem}-{int(time.time())}{p.suffix}"

@@ -59,3 +59,81 @@ def acquire_single_instance() -> bool:
         return True
     except OSError:
         return False
+
+
+# ── staying lightweight ──────────────────────────────────────────
+def lower_priority(nice: int = 10) -> None:
+    """Run at a lower priority so your own apps always win when the Mac is busy."""
+    try:
+        import os
+        os.nice(int(nice))
+    except Exception:
+        pass
+
+
+def system_busy(threshold: float = 0.75) -> bool:
+    """True when the Mac is already working hard (1-minute load per core above threshold)."""
+    try:
+        import os
+        return os.getloadavg()[0] / (os.cpu_count() or 4) > threshold
+    except Exception:
+        return False
+
+
+def on_battery() -> bool:
+    try:
+        import psutil
+        b = psutil.sensors_battery()
+        return bool(b and not b.power_plugged)
+    except Exception:
+        return False
+
+
+_front = (0.0, "")
+
+
+def frontmost_app() -> str:
+    """Name of the frontmost app (cached for 3 s)."""
+    global _front
+    import subprocess
+    import time as _t
+    if _t.time() - _front[0] < 3:
+        return _front[1]
+    name = ""
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=3).stdout.strip()
+        info = subprocess.run(["lsappinfo", "info", "-only", "name", asn], capture_output=True, text=True, timeout=3).stdout
+        name = info.split("=")[-1].strip().strip('"')
+    except Exception:
+        pass
+    _front = (_t.time(), name)
+    return name
+
+
+def perf_text() -> str:
+    try:
+        import psutil
+        proc = psutil.Process()
+        return f"{proc.cpu_percent(interval=None) / (psutil.cpu_count() or 1):.0f}% CPU, {proc.memory_info().rss / 1e6:.0f} MB"
+    except Exception:
+        return "n/a"
+
+
+_audio = (0.0, False)
+
+
+def audio_playing() -> bool:
+    """True while something is playing sound on the Mac (music, video). Cached for 6 s."""
+    global _audio
+    import subprocess
+    import time as _t
+    if _t.time() - _audio[0] < 6:
+        return _audio[1]
+    playing = False
+    try:
+        out = subprocess.run(["pmset", "-g", "assertions"], capture_output=True, text=True, timeout=4).stdout
+        playing = any("com.apple.audio" in line and "PreventUserIdle" in line for line in out.splitlines())
+    except Exception:
+        pass
+    _audio = (_t.time(), playing)
+    return playing

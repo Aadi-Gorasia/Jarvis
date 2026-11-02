@@ -25,11 +25,15 @@ HARD_BLOCK = [
     r"(curl|wget)[^|;]*\|\s*(ba|z)?sh", r"\bcsrutil\b", r"\bnvram\b",
     r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*\s+(/|~|\$HOME)(\s|$|\*)",
     r"find-generic-password|find-internet-password|dump-keychain",
+    r"\bgh\s+repo\s+delete\b", r"\bgh\s+auth\s+(token|logout|refresh)\b", r"\bgit\s+filter-(branch|repo)\b",
+    r"\bgit\s+push\b[^|;&]*\s(-f|--force)(\s|$)",
     r"\.ssh\b|\.gnupg\b|\.aws\b|\.kube\b|Keychains|Chrome/Default|Chrome/Profile|Login Data|Firefox/Profiles|\.jarvis/\.env",
 ]
 RISKY_SHELL = [
     r"\brm\b", r"\brmdir\b", r"\bkill(all)?\b", r"\bpkill\b", r"\bchmod\b", r"\bchown\b",
-    r"\bgit\s+push\b", r"\bgit\s+reset\s+--hard", r"\bgit\s+clean\b",
+    r"\bgit\s+push\b", r"\bgit\s+reset\s+--hard", r"\bgit\s+clean\b", r"\bgit\s+branch\s+(-D|-d|--delete)\b",
+    r"\bgh\s+(repo\s+(edit|create|rename|archive|transfer|fork)|pr\s+(merge|close|create|edit|ready)|issue\s+(close|delete|create|edit|transfer)|release|secret|variable|workflow\s+run|label\s+(create|edit|delete))",
+    r"\bgh\s+api\b.*(-X|--method)[ =]*(POST|PATCH|PUT|DELETE)",
     r"\bcurl\b.*(-X\s*(POST|PUT|DELETE|PATCH)|\s-d\s|--data|\s-F\s|\s-T\s|--upload)",
     r"\bscp\b", r"\brsync\b.*:", r"\bssh\b", r"\bnc\b", r"\blaunchctl\b", r"\bdefaults\s+write",
     r"\bnetworksetup\b", r"\btccutil\b", r"\bosascript\b", r"\bmail\b", r"\bsendmail\b",
@@ -76,17 +80,38 @@ def resolve(path: str) -> Path:
     return p
 
 
-def approve(action: str, reason: str) -> bool:
+def approve(action: str, reason: str, key: str = None) -> bool:
+    """Ask the user. With a key, one "yes" covers the same kind of action for the rest of this task
+    (so "clean my GitHub" doesn't ask again for every repository)."""
     action = action if len(action) <= 160 else action[:157] + "..."
     task = current_task()
+    if task is not None and getattr(task, "auto_approve", False):
+        return True                                  # "go ahead with everything" (hard blocks still apply)
+    if key and task is not None and key in getattr(task, "approved", set()):
+        return True
     if task is not None and ctx.broker is not None:
-        return ctx.broker.request(f"the {task.agent} agent, task {task.id}", action, reason)
-    return ctx.confirm(f"{reason}: {action}. Approve?")
+        ok = ctx.broker.request(f"the {task.agent} agent, task {task.id}", action, reason + (" (a yes covers the same kind of action for the rest of this task)" if key else ""))
+    else:
+        ok = ctx.confirm(f"{reason}: {action}. Approve?")
+    if ok and key and task is not None:
+        task.approved.add(key)
+    return ok
 
 
-def _need(action: str, reason: str) -> None:
-    if not approve(action, reason):
+def _need(action: str, reason: str, key: str = None) -> None:
+    if not approve(action, reason, key):
         raise PermissionError("the user did not approve this action; choose a different approach or report back")
+
+
+def _cmd_key(cmd: str):
+    """'git push origin main' -> 'git push'. Only for git/gh, where repeating the same action is normal."""
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(toks) >= 2 and toks[0] in ("git", "gh") and not re.search(r"[;&|`$()<>]", cmd):
+        return f"{toks[0]} {toks[1]}" + (f" {toks[2]}" if toks[0] == "gh" and len(toks) > 2 else "")
+    return None
 
 
 def _hard_block(text: str) -> None:
@@ -120,7 +145,7 @@ def guard_shell(cmd: str) -> None:
         _need(cmd, "Shell command")
         return
     if any(re.search(p, cmd) for p in RISKY_SHELL) and not _rm_inside_workspace(cmd):
-        _need(cmd, "Risky shell command")
+        _need(cmd, "Risky shell command", _cmd_key(cmd))
 
 
 def guard_python(code: str) -> None:

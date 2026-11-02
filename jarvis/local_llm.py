@@ -78,14 +78,16 @@ class LocalChat:
         self.model = cfg.llm.ollama_model
         self.num_ctx = int(cfg.llm.ollama_context)
         self.think = bool(cfg.llm.ollama_think)
+        self.keep_alive = getattr(cfg.llm, "ollama_keep_alive", "5m")      # unload the model soon after use to free memory
+        self.threads = int(getattr(cfg.llm, "ollama_threads", 4))
         self.tools = {t.__name__: t for t in tools}
         self.schemas = [_schema(t) for t in tools]
         self.max_calls = max_calls
         self.messages = [{"role": "system", "content": system}]
 
     def _post(self, use_tools: bool) -> dict:
-        body = {"model": self.model, "messages": self.messages, "stream": False, "keep_alive": "30m",
-                "options": {"num_ctx": self.num_ctx, "temperature": 0.3}}
+        body = {"model": self.model, "messages": self.messages, "stream": False, "keep_alive": self.keep_alive,
+                "options": {"num_ctx": self.num_ctx, "temperature": 0.3, "num_thread": self.threads}}
         if use_tools and self.schemas:
             body["tools"] = self.schemas
         if self.think is not None:

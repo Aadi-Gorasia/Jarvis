@@ -68,6 +68,34 @@ def run_doctor(cfg) -> None:
     except Exception:
         warn("Ollama is not running", "open the Ollama app (only needed for on-device fallback and local agents)")
 
+    # history
+    try:
+        from . import history
+        st = history.stats()
+        if st == "nothing imported yet":
+            warn("No ChatGPT or Gemini history imported yet", "export it (ChatGPT: Settings > Data controls > Export; Google: takeout.google.com > Gemini Apps), then use the menu bar's Import item or drop the zip in Downloads")
+        else:
+            good("History searchable: " + st)
+    except Exception as exc:
+        warn("History check failed", str(exc)[:100])
+
+    # speed: on-device speech recognition
+    try:
+        import faster_whisper  # noqa: F401
+        good(f"On-device speech recognition installed (Whisper {cfg.stt.whisper_model}): saves about a second per request")
+    except Exception:
+        warn("On-device speech recognition not installed", "optional, makes every answer about 1 second faster: ./venv/bin/pip install faster-whisper (Python 3.12 or 3.13 recommended)")
+
+    # hands-free
+    try:
+        import faster_whisper  # noqa: F401
+        mode = str(cfg.always_listen.enabled).lower()
+        good(f"Hands-free listening available (always_listen.enabled: {mode}); sensitivity {cfg.always_listen.sensitivity}")
+    except Exception:
+        warn("Hands-free listening is off", "it needs on-device Whisper so nothing you say to other people is uploaded: ./venv/bin/pip install faster-whisper")
+    from .util import perf_text
+    good("Lightweight mode: low priority, 2 threads, halo " + str(cfg.performance.halo_fps) + " fps", "Jarvis now uses " + perf_text())
+
     # voice
     if cfg.elevenlabs_key and cfg.tts.engine == "elevenlabs":
         try:
@@ -94,6 +122,14 @@ def run_doctor(cfg) -> None:
     good("Wake-word model files present") if not missing else warn(f"Wake-word files missing: {', '.join(missing)}", "they download automatically on the next start (needs internet)")
 
     # microphone
+    from .permissions import mic_status
+    st = mic_status()
+    if st == "authorized":
+        good("macOS microphone permission: authorized")
+    elif st in ("denied", "restricted"):
+        bad(f"macOS microphone permission: {st}", "System Settings > Privacy & Security > Microphone, switch on Jarvis/Python/Terminal (or run: tccutil reset Microphone, then start Jarvis again to get the prompt)")
+    elif st == "not_determined":
+        warn("macOS has not asked for microphone permission yet", "start Jarvis and click Allow when the prompt appears")
     try:
         import numpy as np
         from .audio import Microphone
@@ -125,6 +161,41 @@ def run_doctor(cfg) -> None:
         good(f"Screen halo available ({len(NSScreen.screens())} display(s))")
     except Exception:
         warn("Screen halo unavailable", "pyobjc not installed: rerun ./install.sh")
+    try:
+        from .webinbox import WebInbox
+        from .notifications import NotificationWatcher as _NW
+        wi = WebInbox(cfg, None, _NW(cfg, print))
+        wi.poll_once()
+        if wi.status == "ok":
+            good("Chat tabs readable: " + ", ".join(sorted(wi.seen)) )
+        else:
+            warn(f"Chat tabs: {wi.status}", wi.help_text())
+    except Exception as exc:
+        warn("Chat-tab check failed", str(exc)[:100])
+    try:
+        import os as _os
+        from .notifications import NotificationWatcher
+        w = NotificationWatcher(cfg, print)
+        w.poll_once()
+        if w.status == "disabled":
+            pass
+        elif w.status == "ok":
+            good("Message access works (reading your notifications)")
+        elif w.status == "needs_full_disk_access":
+            warn("Message access needs Full Disk Access", f"System Settings > Privacy & Security > Full Disk Access > add: {_os.path.realpath(sys.executable)}")
+        else:
+            warn(f"Message access: {w.status}", "needs macOS 14 or later with notifications enabled for your messaging apps")
+    except Exception as exc:
+        warn("Message access check failed", str(exc)[:100])
+    try:
+        from .social import SocialWatcher
+        snap = SocialWatcher(cfg, print).snapshot()
+        if snap:
+            good("Message updates can see: " + ", ".join(f"{k} ({v})" for k, v in snap.items()))
+        else:
+            warn("Message updates see no messaging apps or sites right now", "they only work for apps that are running and browser tabs that are open; edit social: in config.yaml")
+    except Exception as exc:
+        warn("Message updates check failed", str(exc)[:100])
     running = subprocess.run(["pgrep", "-fl", "jarvis[.](main|menubar)"], capture_output=True, text=True).stdout.strip()
     good("Jarvis is running", running.splitlines()[0][:60]) if running else warn("Jarvis is not running", "./jarvisctl.sh start   (or ./jarvisctl.sh menubar to watch it)")
 

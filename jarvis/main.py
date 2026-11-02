@@ -14,16 +14,36 @@ def main() -> None:
     ap.add_argument("--test-voice", action="store_true", help="speak a test line with the configured voice")
     ap.add_argument("--test-wake", action="store_true", help="live wake-word scores while you say Hey Jarvis")
     ap.add_argument("--doctor", action="store_true", help="check everything and say what to fix")
+    ap.add_argument("--import-history", nargs="+", metavar="PATH", help="import a ChatGPT or Gemini data export")
+    ap.add_argument("--distill-history", action="store_true", help="turn imported history into long-term facts (asks first)")
     ap.add_argument("--config", help="path to an alternative config.yaml")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
     setup_logging(args.verbose)
     cfg = load_config(args.config)
+    from .util import lower_priority
+    lower_priority(cfg.performance.nice)
 
     if args.test_mic:
         from .audio import mic_test
         mic_test(device=cfg.audio.device)
+        return
+    if args.import_history:
+        from . import history
+        counts = history.import_paths(args.import_history)
+        print(f"Imported {counts['chatgpt']:,} ChatGPT and {counts['gemini']:,} Gemini messages "
+              f"({counts['skipped_duplicates']:,} already imported). History now holds: {history.stats()}.")
+        if not (counts["chatgpt"] or counts["gemini"] or counts["skipped_duplicates"]):
+            print("Found nothing to import. Expected conversations.json (ChatGPT export) or MyActivity.json under 'Gemini Apps' (Google Takeout).")
+        return
+    if args.distill_history:
+        from google import genai
+        from . import history
+        from .memory import Memory
+        from .util import DATA_DIR
+        n = history.distill(cfg, genai.Client(api_key=cfg.api_key), Memory(DATA_DIR / "jarvis.db"))
+        print(f"Saved {n} facts to Jarvis's memory.")
         return
     if args.doctor:
         from .doctor import run_doctor

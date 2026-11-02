@@ -28,6 +28,8 @@ class Microphone:
         self.stream = None
         self._zero_run = 0
         self._warned = False
+        self.blocked = False  # True when the mic only delivers digital silence (permission missing)
+        self.rms = 0.0       # loudness of the most recent frame
         self.ambient = 0.0   # running estimate of the room's noise floor
 
     def open(self):
@@ -54,17 +56,25 @@ class Microphone:
         # A mic without permission delivers pure digital silence.
         if not frame.any():
             self._zero_run += 1
-            if self._zero_run == 150 and not self._warned:  # ~12 s
-                self._warned = True
-                log.warning("Microphone is returning pure silence. Check macOS Privacy & Security > Microphone.")
+            if self._zero_run == 25 and not self.blocked:   # ~2 s of exact digital silence = macOS is withholding the mic
+                self.blocked = True
+                log.warning("Microphone is returning pure silence: macOS is blocking access for this process.")
         else:
             self._zero_run = 0
+            self.blocked = False
         rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+        self.rms = rms
         if self.ambient == 0.0 or rms < self.ambient:
             self.ambient = rms if self.ambient == 0.0 else 0.8 * self.ambient + 0.2 * rms  # drops fast
         else:
             self.ambient += 0.002 * (rms - self.ambient)                                   # rises slowly
         return frame
+
+    def voice_level(self, full_scale: float = 2500.0) -> float:
+        """How loud you are right now, 0..1 (relative to the room's noise), for the halo."""
+        floor = self.ambient * 1.3
+        x = (self.rms - floor) / max(1.0, full_scale - floor)
+        return max(0.0, min(1.0, x)) ** 0.6
 
     def flush(self):
         try:
@@ -143,6 +153,106 @@ class WakeWord:
                 return
 
 
+class Segmenter:
+    """Cuts the always-open microphone into spoken sentences while also listening for the wake word, so Jarvis can
+    answer to his name instantly *or* work out for himself whether a sentence was meant for him.
+
+    It also lets you interrupt him: while he is speaking it knows how loud his own voice is, learns how much of it
+    reaches the mic, and treats anything clearly louder than that as you talking over him."""
+
+    def __init__(self, mic, audio_cfg, wake, wake_threshold: float, end_silence: float = 0.6, max_utterance: float = 15.0,
+                 playback=None, barge_in: bool = True):
+        self.mic, self.cfg, self.wake = mic, audio_cfg, wake
+        self.threshold, self.end_silence, self.max_utterance = wake_threshold, end_silence, max_utterance
+        self.playback, self.barge_in = playback, barge_in
+        self.coupling = 0.35          # how much of his own voice reaches the mic (headphones ~0, laptop speakers high)
+        self.last_speech_s = 0.0
+
+    def _playing(self) -> bool:
+        pb = self.playback
+        return pb is not None and (pb.playing or time.time() - getattr(pb, "_last_audio", 0.0) < 0.4)
+
+    def next(self, on_idle=None, on_wake=None, on_pause=None, on_start=None, on_end=None, on_barge=None):
+        """Block until a sentence ends. Returns (wav or None, woke, handle): woke = the wake word fired during it;
+        handle = a transcription already started for it (if on_pause was given and you really were done)."""
+        cfg = self.cfg
+        frame_s = FRAME / RATE
+        preroll = collections.deque(maxlen=5)
+        frames, started, woke, barged = [], False, False, False
+        quiet = speech_s = noise = 0.0
+        barge = 0
+        handle, fired_at, t_started = None, -1.0, 0.0
+        if self.wake is not None and hasattr(self.wake.model, "reset"):
+            self.wake.model.reset()
+        self.mic.flush()
+        while True:
+            if on_idle is not None and on_idle():            # paused, or he just spoke an announcement
+                frames, started, woke, barged, quiet, speech_s, handle, barge = [], False, False, False, 0.0, 0.0, None, 0
+                preroll.clear()
+                if self.wake is not None and hasattr(self.wake.model, "reset"):
+                    self.wake.model.reset()
+                continue
+            frame = self.mic.read()
+            playing = self.barge_in and self._playing()
+            if self.wake is not None and not woke:
+                scores = self.wake.model.predict(frame)
+                if scores and max(scores.values()) >= self.threshold:
+                    woke = True
+                    if on_wake:
+                        on_wake()                            # the halo appears the instant he hears his name
+                    if playing and on_barge and not barged:
+                        barged = True
+                        on_barge()                           # saying his name always interrupts him
+            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            floor = max(noise, getattr(self.mic, "ambient", 0.0))
+            thr = max(cfg.min_rms, floor * cfg.noise_multiplier)
+            if playing:                                       # his own voice is in the mic: demand much more than that
+                thr = max(thr, self.coupling * self.playback.playback_rms * 2.0 + floor * 2.0)
+            loud = rms > thr
+            now = time.monotonic()
+            if playing and not loud and self.playback.playback_rms > 200:
+                self.coupling = 0.97 * self.coupling + 0.03 * min(3.0, rms / self.playback.playback_rms)
+            if not started:
+                if not playing:
+                    noise = rms if noise == 0 else 0.9 * noise + 0.1 * rms
+                preroll.append(frame)
+                if loud:
+                    barge += 1
+                    if not playing or barge >= 3:             # over his voice it must be sustained (about a quarter second)
+                        started, t_started, quiet = True, now, 0.0
+                        frames.extend(preroll)
+                        speech_s += frame_s * (barge if playing else 1)
+                        if playing and on_barge and not barged:
+                            barged = True
+                            on_barge()
+                        if on_start:
+                            on_start(woke)
+                else:
+                    barge = 0
+                continue
+            frames.append(frame)
+            if loud:
+                quiet = 0.0
+                speech_s += frame_s
+                handle = None
+            else:
+                quiet += frame_s
+                if woke and on_pause and handle is None and quiet >= float(getattr(cfg, "speculative_after", 0.2)) and speech_s >= MIN_SPEECH_S:
+                    handle, fired_at = on_pause(pcm_to_wav(np.concatenate(frames))), speech_s
+            if quiet >= self.end_silence or now - t_started > self.max_utterance:
+                if speech_s < MIN_SPEECH_S:                  # a click or cough: not a sentence
+                    frames, started, quiet, speech_s, handle, barge = [], False, 0.0, 0.0, None, 0
+                    preroll.clear()
+                    if on_end:
+                        on_end()
+                    continue
+                wav = pcm_to_wav(np.concatenate(frames))
+                self.last_speech_s = speech_s
+                if on_end:
+                    on_end()
+                return wav, woke, (handle if handle is not None and speech_s == fired_at else None)
+
+
 class Recorder:
     """Records one spoken utterance using a simple adaptive energy VAD."""
 
@@ -153,11 +263,19 @@ class Recorder:
 
     def record(self, start_timeout: float):
         """Return WAV bytes, or None if the user never started speaking."""
+        return self.record_ex(start_timeout)[0]
+
+    def record_ex(self, start_timeout: float, on_pause=None):
+        """Like record(), returning (wav, handle). If on_pause is given it is called with the audio so far as soon as
+        you pause briefly (before the sentence is officially over), and whatever it returns (for example a transcription
+        already in progress) comes back as `handle` if you really were finished. That hides most of the wait."""
         cfg = self.cfg
         frame_s = FRAME / RATE
+        spec_after = float(getattr(cfg, "speculative_after", 0.2))
         preroll = collections.deque(maxlen=4)
         frames, started = [], False
         quiet = speech_s = noise = 0.0
+        handle, fired_at = None, -1.0
         t0 = time.monotonic()
         t_started = t0
         while True:
@@ -174,28 +292,33 @@ class Recorder:
                     frames.extend(preroll)
                     speech_s += frame_s
                 elif now - t0 > start_timeout:
-                    return None
+                    return None, None
             else:
                 frames.append(frame)
                 if loud:
                     quiet = 0.0
                     speech_s += frame_s
+                    handle = None                       # you kept talking: any early guess is stale
                 else:
                     quiet += frame_s
+                    if on_pause and handle is None and quiet >= spec_after and speech_s >= MIN_SPEECH_S:
+                        handle, fired_at = on_pause(pcm_to_wav(np.concatenate(frames))), speech_s   # start early
                 if quiet >= cfg.silence_seconds:
                     if speech_s < MIN_SPEECH_S:
                         # only the tail of the wake word (or a click) so far: the user is still
                         # pausing before the command, so start over and keep waiting
                         started, frames, speech_s, quiet = False, [], 0.0, 0.0
                         preroll.clear()
+                        handle = None
                         continue
                     break
                 if now - t_started > cfg.max_seconds:
                     break
         self.last_speech_s = speech_s
         if speech_s < 0.25:
-            return None
-        return pcm_to_wav(np.concatenate(frames))
+            return None, None
+        wav = pcm_to_wav(np.concatenate(frames))
+        return wav, (handle if handle is not None and speech_s == fired_at else None)   # None if you kept talking after the pause
 
 
 def pcm_to_wav(pcm: np.ndarray) -> bytes:

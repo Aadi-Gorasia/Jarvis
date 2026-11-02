@@ -3,6 +3,7 @@ are handled right here in milliseconds with no AI call, so the basics never wait
 import logging
 import re
 import subprocess
+from urllib.parse import quote_plus
 from datetime import datetime
 
 log = logging.getLogger("jarvis.reflex")
@@ -150,11 +151,35 @@ def h_battery(m, j):
     return out
 
 
+def _spoken_elapsed(sec: float) -> str:
+    sec = int(sec)
+    return f"{sec // 60} minute{'s' if sec // 60 != 1 else ''} {sec % 60} seconds" if sec >= 60 else f"{sec} seconds"
+
+
+def _launch(j, agent: str, brief: str, m, what: str):
+    auto = bool(re.search(r"dont ask|do not ask|go ahead|everything|without asking|no need to ask|just do it", m.string))
+    t = j.manager.spawn(agent, brief + f' (The user said: "{m.string}")', auto_approve=auto)
+    return (f"On it: task {t.id}, {what}. Watch the timer on screen, and I'll tell you when it's done."
+            + (" I won't ask for approvals." if auto else ""))
+
+
+def h_github(m, j):
+    return _launch(j, "github", "Do the full GitHub cleanup following your workflow: audit, plan, fix locally on a branch, commit, push, open pull requests, and make the profile and flagship repositories look professional.", m, "the GitHub agent")
+
+
+def h_clean_mac(m, j):
+    folder = re.search(r"(downloads|desktop)", m.string)
+    brief = (f"Organise the user's {folder.group(1).title()} folder into sensible subfolders using move_many (undoable), without touching anything modified this week."
+             if folder and "organi" in m.string else
+             "Do the full Mac cleanup following your workflow: scan everything, move the clearly safe items to the Trash in one batch, and report the space freed and what needs the user's decision.")
+    return _launch(j, "cleaner", brief, m, "the cleaner agent")
+
+
 def h_agents(m, j):
+    jobs = j.manager.jobs()
+    if jobs:
+        return "Working on: " + "; ".join(f"{agent}, {_spoken_elapsed(el)}, {detail}" for _tid, agent, el, detail in jobs[:3]) + "."
     tasks = list(j.manager.tasks.values())
-    running = [t for t in tasks if t.status in ("queued", "running")]
-    if running:
-        return "Working on: " + ", ".join(f"{t.agent} on task {t.id}" for t in running[:4]) + "."
     if tasks:
         last = max(tasks, key=lambda t: t.id)
         return f"Nothing is running. Task {last.id}, the {last.agent} agent, is {last.status}."
@@ -171,6 +196,68 @@ def h_approve(m, j):
 
 def h_deny(m, j):
     return "Denied." if "Denied" in j.broker.resolve(0, False) else None
+
+
+def h_messages(m, j):
+    n, soc = getattr(j, "notifier", None), getattr(j, "social", None)
+    if n is not None:
+        items = n.inbox.unread()
+        if items:
+            return n.spoken_summary()
+    if soc is not None:                                  # counts from Dock badges and tab titles
+        counts = soc.summary()
+        w = getattr(j, "webinbox", None)
+        hint = (" " + w.help_text()) if (w is not None and w.status not in ("ok", "disabled", "starting") and "Unread" not in counts) else ""
+        return counts + hint
+    return n.help_text() if n is not None else None
+
+
+def h_catchup(m, j):
+    n = getattr(j, "notifier", None)
+    if n is None:
+        return None
+    total = len(n.inbox.unread(limit=1000))
+    items = n.inbox.unread(limit=5)
+    if not items:
+        return "You're all caught up."
+    from .notifications import _who
+    n.inbox.mark_read([i[0] for i in items])
+    text = " ".join(f"{_who(t, s)} on {a}: {(b or 'sent something')[:100]}." for _i, _ts, a, t, s, b in items)
+    return text + (f" And {total - len(items)} more." if total > len(items) else "")
+
+
+def h_google(m, j):
+    q = m.group("q").strip()
+    _tools()[0].open_url("https://www.google.com/search?q=" + quote_plus(q))
+    return f"Searching Google for {q}."
+
+
+def h_youtube(m, j):
+    q = (m.group("q") or m.group("q2") or "").strip()
+    _tools()[0].open_url("https://www.youtube.com/results?search_query=" + quote_plus(q))
+    return f"Searching YouTube for {q}."
+
+
+def h_spotify(m, j):
+    q = m.group("q").strip()
+    subprocess.run(["open", "spotify:search:" + quote_plus(q)])
+    return f"Searching Spotify for {q}."
+
+
+def h_know(m, j):
+    mem = getattr(j, "memory", None)
+    if mem is None:
+        return None
+    facts = mem.all_facts(limit=40)
+    if not facts:
+        return "I haven't learned anything about you yet."
+    shown = "; ".join(f"{t}: {d}" for t, d in facts[:5])
+    return f"I know {len(facts)} things about you. The latest: {shown}." + (" Say forget, then a topic, to remove one." if len(facts) else "")
+
+
+def h_undo_cleanup(m, j):
+    from .tools import cleanup_tools
+    return cleanup_tools.undo_cleanup("")
 
 
 def h_pause(m, j):
@@ -195,6 +282,15 @@ RULES = [
     (re.compile(r"(what s |how s |how is |check )?(my )?(battery|battery level|battery life)( level)?|how much battery( do i have)?|how s my (mac|computer)"), h_battery, False),
     (re.compile(r"(what are (the )?(agents|you|everyone|they) (doing|working on)|what s everyone doing|status( report)?|any updates|task status)"), h_agents, False),
     (re.compile(r"(cancel|stop) task (?P<n>\d+)"), h_cancel, False),
+    (re.compile(r"(what did i miss|catch me up|read my (messages|notifications|texts)|read (them|my inbox)|what did they say)"), h_catchup, False),
+    (re.compile(r"(what s |what is )?(any |do i have any |do i have |check my |check |show my |what are my )?(new |unread )?(messages|notifications|texts|dms|whatsapp|instagram)( updates?)?|what s new|anything new"), h_messages, False),
+    (re.compile(r"(google|search google for|search the web for) (?P<q>[a-z0-9 ]{2,60})"), h_google, False),
+    (re.compile(r"(play |search youtube for |youtube )(?P<q>[a-z0-9 ]{2,60}?)( on youtube| in youtube)|search youtube for (?P<q2>[a-z0-9 ]{2,60})"), h_youtube, False),
+    (re.compile(r"play (?P<q>[a-z0-9 ]{2,60}?) on spotify"), h_spotify, False),
+    (re.compile(r"(what do you (know|remember) about me|what have you learned( about me)?|what s in your memory|what do you know)"), h_know, False),
+    (re.compile(r"(clean|clean up|tidy|tidy up|audit|fix|sort out|organi[sz]e|spruce up|polish)( up)? my (github|git hub|repos|repositories|github profile|github account|git hub profile)( and .*)?"), h_github, False),
+    (re.compile(r"((clean|clean up|tidy|tidy up|declutter|speed up|organi[sz]e)( up)? my (mac|macbook|laptop|computer|files|disk|storage|desktop|downloads)|free up (some |more )?(space|storage)( on my (mac|laptop|computer))?)( and .*)?"), h_clean_mac, False),
+    (re.compile(r"(undo|revert) (the |that |my )?(cleanup|clean up|clean|reorganis[a-z]+|organi[sz]ing)"), h_undo_cleanup, False),
     (re.compile(r"(pause listening|stop listening|mute yourself|go quiet)"), h_pause, False),
 ]
 

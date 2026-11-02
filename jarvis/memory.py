@@ -57,3 +57,8 @@ class Memory:
         with self.lock:
             rows = self.db.execute("SELECT role, text FROM log ORDER BY ts DESC LIMIT ?", (n,)).fetchall()
         return rows[::-1]
+
+    def log_since(self, rowid: int):
+        """Chat turns logged after rowid, as (rowid, role, text)."""
+        with self.lock:
+            return self.db.execute("SELECT rowid, role, text FROM log WHERE rowid > ? ORDER BY rowid", (rowid,)).fetchall()

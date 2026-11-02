@@ -23,6 +23,8 @@ echo "==> Creating virtualenv and installing packages (a few minutes the first t
 [ -d venv ] || "$PY" -m venv venv
 ./venv/bin/pip install --quiet --upgrade pip
 ./venv/bin/pip install --quiet -r requirements.txt
+echo "==> Optional: on-device speech recognition (faster answers)"
+./venv/bin/pip install --quiet faster-whisper || echo "   (skipped: faster-whisper could not be installed here; Jarvis will use Gemini for hearing)"
 echo "==> Downloading the 'Hey Jarvis' wake-word model"
 ./venv/bin/python -c "import openwakeword; openwakeword.utils.download_models()"
 
@@ -98,6 +100,7 @@ else
   echo "==> Installed Jarvis.app as a hidden login item. Approve the microphone prompt for 'Jarvis'."
 fi
 
+command -v gh >/dev/null 2>&1 || echo "Tip: for the GitHub agent, run: brew install gh && gh auth login"
 echo
 ./venv/bin/python -m jarvis.main --doctor || true
 echo "Look for the microphone icon in your menu bar, then say 'Hey Jarvis'. Manage it with ./jarvisctl.sh  (status | logs | restart | stop | text | mic)"

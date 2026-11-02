@@ -2,6 +2,7 @@
 import contextlib
 import json
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,7 @@ from .. import llm
 from ..tools import tools_for_groups, GROUPS
 from ..tools.base import current, ctx
 from ..tools import policy
-from ..util import DATA_DIR, notify
+from ..util import DATA_DIR, notify, on_battery, system_busy
 from .definitions import BUILTIN, AgentDef, load_custom, save_custom, slug
 
 log = logging.getLogger("jarvis.agents")
@@ -33,6 +34,28 @@ Facts about the user:
 {facts}"""
 
 
+STEP_TEXT = {
+    "shell": "running a command", "run_python": "running a script", "read_file": "reading {path}", "write_file": "writing {path}",
+    "edit_file": "editing {path}", "list_dir": "looking in {path}", "excel_inspect": "reading the spreadsheet", "excel_read": "reading the spreadsheet",
+    "excel_write": "filling in the spreadsheet", "repo_audit": "auditing {path}", "audit_all_repos": "auditing all repositories",
+    "find_git_repos": "finding your repositories", "github_inventory": "listing your GitHub repositories", "github_api": "talking to GitHub",
+    "mac_scan": "scanning {kind}", "trash_many": "moving files to the Trash", "move_many": "organising files", "web_search": "searching the web",
+    "fetch_webpage": "reading a web page", "describe_screen": "looking at the screen", "open_url": "opening a page", "search_files": "searching your files",
+    "delegate_task": "handing work to another agent", "download_file": "downloading a file", "gui_click": "clicking", "gui_type": "typing",
+}
+
+
+def friendly_step(line: str) -> str:
+    """'12:00:01 repo_audit {'path': '/Users/me/Code/site'}' -> 'auditing site'."""
+    parts = line.split(" ", 2)
+    tool = parts[1] if len(parts) > 1 else ""
+    rest = parts[2] if len(parts) > 2 else ""
+    text = STEP_TEXT.get(tool, tool.replace("_", " ") or "working")
+    m = re.search(r"'(?:path|kind)': '([^']*)'", rest) or re.search(r"\('([^']*)'", rest)
+    arg = (m.group(1).rstrip("/").split("/")[-1] if m else "")[:30]
+    return text.replace("{path}", arg or "a file").replace("{kind}", arg or "your Mac")
+
+
 @dataclass
 class Task:
     id: int
@@ -48,12 +71,22 @@ class Task:
     engine: str = ""          # "" = automatic | gemini | ollama
     result: str = ""
     log: list = field(default_factory=list)
+    approved: set = field(default_factory=set)   # kinds of risky action the user already OK'd for this task
+    auto_approve: bool = False                   # the user said "go ahead with everything": no questions for this task
+    progress: str = ""                           # the agent's own status line (report_progress)
+    step: str = ""                               # what it is doing right now, in plain words
 
     def note(self, msg: str) -> None:
-        self.log.append(f"{datetime.now():%H:%M:%S} {msg}")
+        line = f"{datetime.now():%H:%M:%S} {msg}"
+        self.log.append(line)
+        self.step = friendly_step(line)
+
+    def detail(self) -> str:
+        return self.progress or self.step or "starting"
 
     def to_json(self) -> dict:
         d = dict(self.__dict__)
+        d["approved"] = sorted(d.get("approved", []))
         return d
 
 
@@ -88,14 +121,14 @@ class AgentManager:
         return True
 
     # ── tasks ────────────────────────────────────────────────────
-    def spawn(self, agent: str, brief: str, parent: int = 0, depth: int = 0, engine: str = "") -> Task:
+    def spawn(self, agent: str, brief: str, parent: int = 0, depth: int = 0, engine: str = "", auto_approve: bool = False) -> Task:
         name = slug(agent)
         if name not in self.defs:
             raise ValueError(f"unknown agent '{agent}'. Available: {', '.join(self.defs)}")
         if depth > self.cfg.agents.max_delegation_depth:
             raise ValueError("delegation depth limit reached; do this work yourself")
         with self.lock:
-            task = Task(self._next, name, brief, parent, depth, engine=engine.strip().lower())
+            task = Task(self._next, name, brief, parent, depth, engine=engine.strip().lower(), auto_approve=bool(auto_approve))
             self._next += 1
             self.tasks[task.id] = task
         self.pool.submit(self._run, task)
@@ -135,7 +168,11 @@ class AgentManager:
             return task.engine
         if task.agent in (self.cfg.llm.gemini_agents or []):
             return "gemini"
-        return self.cfg.llm.agents_provider
+        first = self.cfg.llm.agents_provider
+        if first == "ollama" and self.gcfg.api_key and self.cfg.performance.prefer_cloud_when_busy and (system_busy() or on_battery()):
+            log.info("Mac is busy or on battery: running task %s on the cloud model instead of on-device", task.id)
+            return "gemini"                   # heavy local models would slow down whatever you're doing
+        return first
 
     def _available(self, engine: str) -> bool:
         return {"gemini": bool(self.gcfg.api_key), "openai": bool(self.gcfg.openai_key), "ollama": True}.get(engine, False)
@@ -220,6 +257,12 @@ class AgentManager:
         verb = {"done": "finished", "failed": "hit a problem on", "cancelled": "stopped"}.get(task.status, "finished")
         notify(f"Jarvis: {task.agent} {verb} task {task.id}", first)
         self.announce(f"The {task.agent} agent {verb} task {task.id}. {first}")
+
+    def jobs(self):
+        """Running agent tasks as (task id, agent, seconds elapsed, what it's doing), oldest first, for the on-screen timer."""
+        now = time.time()
+        return sorted(((t.id, t.agent, now - (t.started or t.created), t.detail() if t.status == "running" else "waiting for a free slot")
+                       for t in list(self.tasks.values()) if t.status in ("running", "queued")), key=lambda j: -j[2])
 
     # ── status for Jarvis ────────────────────────────────────────
     def summary(self, limit: int = 12) -> str:

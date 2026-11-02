@@ -11,6 +11,7 @@ gemini:
   model: "gemini-3.5-flash-lite"       # Jarvis's conversation brain: chosen for speed
   stt_model: "gemini-3.5-flash-lite"   # transcribes your voice
   thinking_level: "minimal"            # minimal | low | medium | high. Less thinking = faster answers
+  first_token_seconds: 10              # if a model hasn't started answering in this long, the next one takes over
   timeout_seconds: 12                  # give up on a stuck request after this long and fail over
 
 wake:
@@ -21,23 +22,28 @@ audio:
   device: null               # null = system default mic. Or a device name/index (see: python -m sounddevice)
   min_rms: 120               # speech must be at least this loud (and 3x the room noise, which Jarvis tracks itself)
   noise_multiplier: 3.0
-  silence_seconds: 0.8       # a pause this long ends your sentence
+  silence_seconds: 0.5       # a pause this long ends your sentence (lower = snappier, higher = fewer cut-offs)
+  speculative_stt: true      # start transcribing during a short pause so the answer is ready sooner
   max_seconds: 20            # hard cap on one utterance
   first_utterance_timeout: 10 # seconds to start talking after the wake word
   follow_up_seconds: 6       # stay "awake" this long for follow-up questions
   wake_sound: false          # chime on wake. The screen halo already tells you Jarvis is listening
 
 halo:
-  enabled: true              # dark vignette around the screen edges while Jarvis listens, thinks and speaks
+  enabled: true              # animated dark vignette with flowing silver light around the screen edges while Jarvis listens, thinks, speaks
   color: [0, 0, 0]           # RGB. Black by default; try [40, 40, 48] for a cooler grey
   intensity: 0.55            # 0-1: how dark it gets at the very edge
-  thickness: 0.16            # how far it reaches in, as a fraction of the screen's short side
+  thickness: 0.12            # how far it reaches in when you are loud, as a fraction of the screen's short side
+  sensitivity: 1.0           # how strongly it reacts to your voice (raise it if you speak softly)
+  speed: 1.0                 # how fast the ripples travel around the edges
 
 tts:
   engine: "elevenlabs"       # elevenlabs | say | gemini. Falls back to the Mac voice if ElevenLabs fails or has no key
   elevenlabs_voice_id: "JBFqnCBsd6RMkjVDRZzb"   # "George" (premade). Pick yours at elevenlabs.io/app/voice-library
   elevenlabs_model: "eleven_flash_v2_5"          # lowest latency. eleven_multilingual_v2 sounds richer but is slower
   elevenlabs_max_chars: 500  # a longer sentence uses the free Mac voice, so credits last
+  ack: true                  # say a short "one moment" if an answer is slow, so you're never left in silence
+  ack_after_seconds: 1.4
   mac_voice: "Daniel"        # the fallback voice. List: say -v '?'
   mac_rate: 185
   gemini_model: "gemini-2.5-flash-preview-tts"
@@ -45,14 +51,16 @@ tts:
   gemini_style: "Say in a calm, dry, British butler tone"
 
 stt:
-  provider: "gemini"         # gemini | elevenlabs (Scribe). Each falls back to the other if it fails
+  provider: "auto"           # auto = on-device Whisper if installed (fastest), else Gemini | whisper | gemini | elevenlabs
+  whisper_model: "base.en"   # tiny.en = fastest, base.en = good, small.en = most accurate (use "base" for non-English)
+  whisper_language: "en"     # blank = detect the language
   elevenlabs_model: "scribe_v1"
 
 llm:
   # Which language models Jarvis uses, tried in order. A model that fails (quota, outage) is skipped for a while.
   # Providers: gemini | openai (ChatGPT API, needs OPENAI_API_KEY) | ollama (on-device). Ones without a key are skipped.
   jarvis_chain: ["gemini", "openai", "ollama"]
-  agents_provider: "ollama"  # first choice for the background agents: ollama | gemini | openai
+  agents_provider: "gemini"  # first choice for the background agents: gemini (fast) | openai | ollama (private but slow on a laptop)
   gemini_agents: [operator]  # agents that always start on Gemini (they juggle many tools)
   fallback_order: ["gemini", "openai", "ollama"]   # where agents go next if their first choice fails
   openai_model: "gpt-5.4-mini"                      # any model your OpenAI key can use
@@ -61,6 +69,8 @@ llm:
   ollama_model: "nemotron-3-nano:4b"   # fits a 16 GB Mac. The 30b version needs about 24 GB
   ollama_think: false        # true = better reasoning, much slower on a laptop
   ollama_context: 16384      # tokens of memory per conversation; higher uses more RAM
+  ollama_keep_alive: "5m"    # unload the on-device model this long after use, freeing memory and the GPU
+  ollama_threads: 4          # CPU threads the on-device model may use
   local_parallel: 1          # on-device tasks run at once. A laptop chip shares its speed between them
 
 tools:
@@ -70,10 +80,72 @@ tools:
 agents:
   permission_mode: "trusted"   # ask = approve every action | trusted = free, but risky actions need your OK | full = no prompts
   workspace: "~/Jarvis Workspace"   # agents' default working folder; also holds backups/ and tasks/ reports
-  model: "gemini-3.8-flash"    # the stronger model agents use when they run on Gemini
-  thinking_level: "medium"     # blank = model default
+  model: "gemini-3.5-flash-lite"   # fast model for agents. For harder jobs try a stronger one (e.g. gemini-3.8-flash)
+  thinking_level: "low"        # blank = model default. Less thinking = faster tasks
   max_concurrent: 6            # agents working at the same time (extra tasks queue)
   max_steps: 40                # tool calls one agent may make per task
   max_delegation_depth: 2      # agents may spawn helper agents this many levels deep
   approval_timeout_seconds: 600
   announce_completion: true    # Jarvis tells you when an agent finishes
+
+social:
+  enabled: true              # Jarvis tells you when unread counts go up (counts only; he never reads or sends messages unless you ask)
+  check_minutes: 10          # how often to look
+  speak: true                # false = notification banner only
+  quiet_hours: ["22:30", "08:00"]    # no updates in this window
+  apps: ["WhatsApp", "Messages", "Telegram", "Slack", "Discord"]   # Dock badges of these apps (they must be running)
+  websites: ["instagram", "whatsapp", "linkedin", "/ x"]            # open browser tabs whose title shows a "(3)" count
+
+notifications:
+  # Optional alternative: reads the notifications your Mac receives. Needs Full Disk Access; off by default.
+  enabled: false
+  poll_seconds: 10
+  digest_seconds: 45         # bundle a burst of messages into one announcement
+  read_aloud: "sender"       # none = counts only | sender = who wrote | full = who wrote and what they said
+  retention_days: 14         # how long Jarvis keeps seen messages locally
+  apps: ["WhatsApp", "Instagram", "Messages", "Telegram", "Signal", "Slack", "Discord", "Snapchat", "X", "LinkedIn", "WeChat", "Messenger"]
+
+history:
+  # Jarvis imports ChatGPT / Gemini data exports automatically when one lands in these folders (zip files).
+  auto_import: true
+  watch: ["~/Downloads", "~/Jarvis Workspace/exports"]
+  scan_minutes: 5
+
+webinbox:
+  # Reads the text of chat tabs you already have open (WhatsApp Web, Instagram, Telegram Web...) and tells you what's new.
+  # No notifications or special permissions needed, just "Allow JavaScript from Apple Events" in your browser. Read-only.
+  enabled: true
+  poll_seconds: 45
+  sites: ["WhatsApp", "Instagram", "Telegram", "Messenger", "Slack", "Discord", "LinkedIn", "X"]
+
+memory:
+  auto_learn: true                  # after each conversation Jarvis saves lasting facts about you (never health, money or private matters)
+  max_facts_per_conversation: 5
+  inject_history: true              # automatically bring in relevant past ChatGPT / Gemini / Jarvis conversations when you ask something
+
+performance:
+  # Jarvis is built to stay out of your way while you work.
+  nice: 10                   # run at lower priority than your own apps
+  max_threads: 2             # CPU threads for on-device speech recognition and math libraries
+  halo_fps: 24               # screen-halo frame rate (lower = lighter)
+  halo_fps_battery: 15       # frame rate on battery
+  battery_saver: true
+  pause_background_when_busy: true   # message checks, imports and learning wait while your Mac is busy
+  prefer_cloud_when_busy: true       # when the Mac is busy, agents use the cloud model instead of the on-device one
+
+always_listen:
+  # Talk to Jarvis without saying his name. Speech is understood on your Mac and thrown away unless it is for him;
+  # nothing you say to other people is stored or uploaded.
+  enabled: "auto"            # auto = on when on-device Whisper is installed | true | false
+  sensitivity: 0.6           # 0-1: higher = answers more readily (and sometimes when you weren't talking to him)
+  use_ai_judge: true         # ask a fast AI about borderline sentences (only those few sentences are sent)
+  pause_in_meetings: true
+  meeting_apps: ["zoom.us", "FaceTime", "Microsoft Teams", "Webex"]   # when one of these is in front, he only answers to his name
+  end_silence: 0.6           # seconds of quiet that end a sentence
+  sleep_minutes: 10          # how long "be quiet" / "go to sleep" lasts
+
+interrupt:
+  enabled: true              # talk over him and he stops at once (works best with headphones; with laptop speakers speak up or say his name)
+
+hud:
+  enabled: true              # a small panel with a live timer and what each running task is doing right now

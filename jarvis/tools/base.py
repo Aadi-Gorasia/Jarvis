@@ -30,6 +30,8 @@ class Context:
     memory: Any = None
     manager: Any = None   # AgentManager
     broker: Any = None    # ApprovalBroker
+    social: Any = None    # SocialWatcher
+    notifier: Any = None  # NotificationWatcher
     announce: Callable[[str], None] = print
     confirm: Callable[[str], bool] = lambda prompt: False
 
@@ -41,6 +43,8 @@ def tool(fn=None, *, scope: str = "both"):
     def decorate(f):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
+            if getattr(current, "turn_cancel", None) is not None and current.turn_cancel.is_set():
+                return "Error: the user interrupted. Stop and do not run more tools."
             task = current_task()
             summary = str(kwargs or args)[:160]
             log.info("tool call%s: %s %s", f" [task {task.id}]" if task else "", f.__name__, summary)
