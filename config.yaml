@@ -1,0 +1,40 @@
+# ───────────── JARVIS configuration ─────────────
+# Edit, then run:  ./jarvisctl.sh restart
+
+assistant:
+  name: "Jarvis"
+  user_name: ""              # how Jarvis addresses you, e.g. "sir". Blank = no form of address
+  home_city: "Pune"          # default city for weather questions
+  session_idle_seconds: 600  # forget the current conversation after this much silence
+
+gemini:
+  model: "gemini-3.8-flash"            # main brain. Any Gemini model that supports function calling works
+  stt_model: "gemini-3.5-flash-lite"   # used to transcribe your voice
+  thinking_level: "low"                # Gemini 3.x: minimal | low | medium | high. Blank = model default
+
+wake:
+  model: "hey_jarvis"        # openWakeWord's built-in "Hey Jarvis"
+  threshold: 0.5             # raise (0.6-0.8) if it triggers by accident; lower if it misses you
+
+audio:
+  device: null               # null = system default mic. Or a device name/index (see: python -m sounddevice)
+  min_rms: 350               # speech-detection floor; tune with ./jarvisctl.sh mic
+  noise_multiplier: 2.5      # speech must be this many times louder than room noise
+  silence_seconds: 1.0       # how long a pause ends your sentence
+  max_seconds: 20            # hard cap on one utterance
+  first_utterance_timeout: 6 # seconds to start talking after the wake word
+  follow_up_seconds: 6       # stay "awake" this long for follow-up questions
+  wake_sound: false          # play a chime on wake (can clip the first word if you talk right away)
+
+tts:
+  engine: "say"              # say = built-in macOS voices (offline, instant) | gemini = Gemini TTS (nicer, needs internet)
+  mac_voice: "Daniel"        # British male. Try: Alex, Samantha, Karen, Oliver. List: say -v '?'
+  mac_rate: 185              # words per minute
+  gemini_model: "gemini-2.5-flash-preview-tts"
+  gemini_voice: "Charon"
+  gemini_style: "Say in a calm, dry, British butler tone"
+
+tools:
+  disabled: []               # tool names to switch off, e.g. [describe_screen, read_clipboard]
+  allow_shell: false         # lets Jarvis run terminal commands (always asks you to confirm first)
+  allowed_roots: ["~"]       # folders file tools may touch
