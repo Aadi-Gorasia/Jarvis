@@ -40,6 +40,7 @@ class Brain:
         self.seed: list = []        # recent turns to hand to a provider that joins mid-conversation
         self.last_used = 0.0
         self.use_thinking = bool(cfg.gemini.thinking_level)
+        self.last_provider = None   # who answered most recently (shown in the menu bar)
 
     # ── prompts and sessions ─────────────────────────────────────
     def _system_prompt(self, with_history: bool = False) -> str:
@@ -88,6 +89,7 @@ class Brain:
         for provider in ready:
             try:
                 reply = self._send(provider, text)
+                self.last_provider = provider
                 if provider != self.chain[0]:
                     log.info("Answered by %s", provider)
                 break

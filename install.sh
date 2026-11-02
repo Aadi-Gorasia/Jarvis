@@ -55,7 +55,7 @@ echo "==> Microphone permission: speak for a few seconds and approve the macOS p
 
 # clear any previous install so the two modes never run at once
 launchctl bootout "gui/$UIDN" "$PLIST" 2>/dev/null || true
-pkill -f "jarvis.main" 2>/dev/null || true
+pkill -f "jarvis[.](main|menubar)" 2>/dev/null || true
 osascript -e 'tell application "System Events" to delete (every login item whose name is "Jarvis")' 2>/dev/null || true
 
 if [ "$MODE" = "launchd" ]; then
@@ -67,7 +67,7 @@ if [ "$MODE" = "launchd" ]; then
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>
-    <string>$ROOT/venv/bin/python</string><string>-m</string><string>jarvis.main</string>
+    <string>$ROOT/venv/bin/python</string><string>-m</string><string>jarvis.menubar</string>
   </array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>RunAtLoad</key><true/>
@@ -88,7 +88,7 @@ else
   mkdir -p "$HOME/Applications"
   rm -rf "$APP"
   TMP="$(mktemp -t jarvis).applescript"
-  printf 'do shell script "cd %s && nohup %s/venv/bin/python -m jarvis.main >/dev/null 2>&1 &"\n' "'$ROOT'" "'$ROOT'" > "$TMP"
+  printf 'do shell script "cd %s && nohup %s/venv/bin/python -m jarvis.menubar >/dev/null 2>&1 &"\n' "'$ROOT'" "'$ROOT'" > "$TMP"
   osacompile -o "$APP" "$TMP"
   defaults write "$APP/Contents/Info" LSUIElement -bool true
   defaults write "$APP/Contents/Info" NSMicrophoneUsageDescription -string "Jarvis listens for its wake word."
@@ -99,4 +99,4 @@ else
 fi
 
 echo
-echo "Say 'Hey Jarvis'. Manage it with ./jarvisctl.sh  (status | logs | restart | stop | text | mic)"
+echo "Look for the microphone icon in your menu bar, then say 'Hey Jarvis'. Manage it with ./jarvisctl.sh  (status | logs | restart | stop | text | mic)"

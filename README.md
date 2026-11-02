@@ -1,6 +1,6 @@
 # JARVIS: an always-on Gemini voice assistant with a team of background agents (macOS)
 
-Say **"Hey Jarvis"** from anywhere. It starts at login and runs invisibly (no app, no window). You only ever talk to Jarvis. For real work he hands jobs to specialist agents that run **in parallel in the background**, then tells you when each one finishes.
+Say **"Hey Jarvis"** from anywhere. It starts at login and lives in your **menu bar** (no Dock icon, no window). You only ever talk to Jarvis. For real work he hands jobs to specialist agents that run **in parallel in the background**, then tells you when each one finishes.
 
 ```
                          ┌────────────── you: "Hey Jarvis, ..." ──────────────┐
@@ -20,6 +20,20 @@ Unzip the new version next to the old one, copy your old `.env` file into it, th
 1. Get a free API key at https://aistudio.google.com
 2. `cd jarvis && ./install.sh` (builds the environment, downloads the wake-word model, asks for your key, asks for mic permission, registers the auto-start service).
 3. Grant the permissions macOS asks for over time: Microphone, and for the agents' hands: **Accessibility** and **Screen Recording** (System Settings > Privacy & Security) for the app that launches Jarvis, plus Automation prompts the first time an agent controls an app.
+
+## The menu bar icon
+
+| Icon | Meaning |
+|---|---|
+| 🎙 | Listening for "Hey Jarvis" |
+| 🔴 | Listening to you |
+| 🧠 | Thinking (a number after it = agents working) |
+| 🔊 | Speaking |
+| ⏸ | Paused, microphone fully off |
+| 🔔 | An agent is waiting for your approval |
+| ⚠️ | A problem; open the menu and choose Open log |
+
+Click it for: current status and which model is answering; **Pause listening**; **Type to Jarvis...** (a text box, handy when you can't talk); **Agents** (what each agent is doing, a Stop button per task, and one-click **Approve / Deny** when an agent needs permission); **Agent permissions** (switch between Ask, Trusted and Full, remembered across restarts); Open workspace folder; Open log; Quit.
 
 ## Voice: ElevenLabs
 
@@ -69,7 +83,8 @@ Honest limits: `run_python` and `shell` are policed by pattern checks, not a san
 ```
 ./jarvisctl.sh status | logs | restart | stop | start
 ./jarvisctl.sh text     # type to Jarvis instead of speaking (best first test)
-./jarvisctl.sh run      # foreground with verbose logs
+./jarvisctl.sh menubar  # run the menu bar app in this terminal
+./jarvisctl.sh run      # foreground without the menu bar, verbose logs (for debugging)
 ./jarvisctl.sh mic      # live mic levels, to tune audio.min_rms
 ./jarvisctl.sh voice    # hear the configured voice
 ./jarvisctl.sh local    # test the on-device model
@@ -104,6 +119,7 @@ Add your own tool: a type-hinted function with a docstring and `@tool` in `jarvi
 ```
 config.yaml  .env  install.sh  uninstall.sh  jarvisctl.sh
 jarvis/
+  menubar.py     the menu bar app (how Jarvis normally runs)
   assistant.py   wake -> listen -> Jarvis -> speak loop, announcements from agents
   brain.py       Jarvis's Gemini session, personality, delegation rules
   agents/        definitions.py (roles), manager.py (parallel tasks), approvals.py

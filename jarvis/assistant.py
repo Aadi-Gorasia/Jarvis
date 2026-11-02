@@ -37,6 +37,9 @@ class Jarvis:
         self.stt = Transcriber(cfg, self.client)
 
         self.text_mode = text_mode
+        self.state = "starting"   # starting | listening | recording | thinking | speaking | paused | error
+        self.paused = False       # set by the menu bar: releases the microphone entirely
+        self.error = ""
         self.announce_q: "queue.Queue[str]" = queue.Queue()
         self.broker = ApprovalBroker(cfg, self._announce)
         self.manager = AgentManager(cfg, self.client, self.memory, self._announce)
@@ -61,7 +64,7 @@ class Jarvis:
                 msg = self.announce_q.get_nowait()
             except queue.Empty:
                 return spoke
-            self.speaker.say(msg)
+            self._say(msg)
             spoke = True
 
     # ── confirmation for risky tools ─────────────────────────────
@@ -77,20 +80,59 @@ class Jarvis:
         return input(f"{prompt} [y/N] ").strip().lower().startswith("y")
 
     # ── always-on voice loop ─────────────────────────────────────
+    def _say(self, text: str) -> None:
+        prev = self.state
+        self.state = "speaking"
+        try:
+            self.speaker.say(text)
+        finally:
+            self.state = prev if prev != "speaking" else "listening"
+
+    def _idle(self) -> bool:
+        """Runs between audio frames while waiting for the wake word. True = skip this frame."""
+        if self.paused:
+            if self.mic.stream is not None:
+                self.mic.close()                       # pause really means mic off (orange dot goes away)
+                log.info("Paused: microphone released")
+            self.state = "paused"
+            time.sleep(0.25)
+            return True
+        if self.mic.stream is None:
+            self.mic.open()
+            self.state = "listening"
+            log.info("Resumed: microphone open")
+        return self._flush_announcements()
+
     def run(self) -> None:
-        wake = WakeWord(self.cfg.wake)
+        wake = None
         while True:
             try:
+                if wake is None:
+                    wake = WakeWord(self.cfg.wake)
                 self.mic.open()
+                self.error, self.state = "", "listening"
                 log.info("Listening for the wake word (%s)...", self.cfg.wake.model)
                 while True:
-                    wake.wait(self.mic, self._flush_announcements)
+                    wake.wait(self.mic, self._idle)
                     self.session()
+                    self.state = "listening"
             except KeyboardInterrupt:
                 raise
-            except Exception:
+            except Exception as exc:
                 log.exception("Audio loop crashed; retrying in 5 s")
+                self.error, self.state = str(exc)[:100], "error"
                 time.sleep(5)
+
+    def ask_text(self, text: str) -> str:
+        """Used by the menu bar's 'Type to Jarvis' box: same brain, no microphone."""
+        prev = self.state
+        self.state = "thinking"
+        try:
+            reply = self.brain.ask(text)
+        finally:
+            self.state = prev
+        self._say(reply)
+        return reply
 
     def session(self) -> None:
         log.info("Wake word detected")
@@ -105,14 +147,17 @@ class Jarvis:
                 break
             log.info("You: %s", text)
             if _norm(text) in DISMISS:
-                self.speaker.say("Very well.")
+                self._say("Very well.")
                 break
-            self.speaker.say(self.brain.ask(text))
+            self.state = "thinking"
+            self._say(self.brain.ask(text))
             audio = self._listen(self.cfg.audio.follow_up_seconds)  # follow-up, no wake word needed
         log.info("Back to sleep")
 
     def _listen(self, timeout: float):
+        self.state = "recording"
         audio = self.recorder.record(timeout)
+        self.state = "thinking" if audio else "listening"
         if audio is None:
             log.info("No speech heard (mic level below audio.min_rms? run ./jarvisctl.sh mic)")
         else:
