@@ -97,18 +97,28 @@ class Jarvis:
         if self.cfg.audio.wake_sound:
             play_sound("Tink")
             self.mic.flush()
-        audio = self.recorder.record(self.cfg.audio.first_utterance_timeout)
+        audio = self._listen(self.cfg.audio.first_utterance_timeout)
         while audio:
             text = self.stt.transcribe(audio)
             if not text:
+                log.info("Transcript was empty (heard sound but no words)")
                 break
             log.info("You: %s", text)
             if _norm(text) in DISMISS:
                 self.speaker.say("Very well.")
                 break
             self.speaker.say(self.brain.ask(text))
-            audio = self.recorder.record(self.cfg.audio.follow_up_seconds)  # follow-up, no wake word needed
+            audio = self._listen(self.cfg.audio.follow_up_seconds)  # follow-up, no wake word needed
         log.info("Back to sleep")
+
+    def _listen(self, timeout: float):
+        audio = self.recorder.record(timeout)
+        if audio is None:
+            log.info("No speech heard (mic level below audio.min_rms? run ./jarvisctl.sh mic)")
+        else:
+            log.info("Heard %.1fs of speech; transcribing", self.recorder.last_speech_s)
+            (DATA_DIR / "last_utterance.wav").write_bytes(audio)  # play it to hear what Jarvis heard
+        return audio
 
     # ── keyboard mode for testing without a mic ──────────────────
     def run_text(self) -> None:

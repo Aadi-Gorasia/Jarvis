@@ -12,6 +12,7 @@ def main() -> None:
     ap.add_argument("--test-mic", action="store_true", help="show live mic levels to tune audio.min_rms")
     ap.add_argument("--test-local", action="store_true", help="check the on-device model (Ollama) and tool calling")
     ap.add_argument("--test-voice", action="store_true", help="speak a test line with the configured voice")
+    ap.add_argument("--test-wake", action="store_true", help="live wake-word scores while you say Hey Jarvis")
     ap.add_argument("--config", help="path to an alternative config.yaml")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -22,6 +23,10 @@ def main() -> None:
     if args.test_mic:
         from .audio import mic_test
         mic_test(device=cfg.audio.device)
+        return
+    if args.test_wake:
+        from .audio import wake_test
+        wake_test(cfg)
         return
     if args.test_local:
         from .local_llm import self_test

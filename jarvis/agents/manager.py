@@ -145,9 +145,14 @@ class AgentManager:
                 log.warning("task %s: local model failed (%s); retrying on Gemini", task.id, exc)
                 task.note(f"local model failed ({str(exc)[:100]}); retrying on Gemini")
                 return self._run_engine(defn, task, "gemini")
+            backup = self.cfg.gemini.fallback_model
+            if engine == "gemini" and backup and llm.is_transient(exc) and not task.cancelled:
+                log.warning("task %s: Gemini overloaded (%s); retrying on %s", task.id, str(exc)[:80], backup)
+                task.note(f"Gemini overloaded; retrying on {backup}")
+                return self._run_engine(defn, task, "gemini", model=backup)
             raise
 
-    def _run_engine(self, defn: AgentDef, task: Task, engine: str) -> str:
+    def _run_engine(self, defn: AgentDef, task: Task, engine: str, model: str = "") -> str:
         acfg = self.cfg.agents
         facts = "\n".join(f"- {t}: {d}" for t, d in self.memory.all_facts()) or "(none)"
         system = AGENT_PROMPT.format(agent=defn.name, workspace=policy.workspace(), prompt=defn.prompt,
@@ -156,7 +161,7 @@ class AgentManager:
         level = acfg.thinking_level or None
 
         def start(think_level):
-            return llm.make_chat(self.client, acfg.model, system, tools, acfg.max_steps, think_level,
+            return llm.make_chat(self.client, model or acfg.model, system, tools, acfg.max_steps, think_level,
                                  provider=engine, cfg=self.cfg)
 
         wrap_up = ("Stop using tools. In two to four plain sentences say what you completed, "

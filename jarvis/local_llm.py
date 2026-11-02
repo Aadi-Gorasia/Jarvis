@@ -144,6 +144,10 @@ def self_test(cfg) -> None:
     tools = [t for t in REGISTRY if t.__name__ in ("get_current_time", "system_status")]
     chat = LocalChat(cfg, "You are a concise assistant. Use your tools when they help.", tools, 4)
     t0 = time.time()
-    reply = chat.send_message("What time is it right now? Use your tool to find out.")
+    try:
+        reply = chat.send_message("What time is it right now? Use your tool to find out.")
+    except RuntimeError as exc:
+        print(f"\nLocal model check failed: {exc}")
+        return
     used = any(m["role"] == "tool" for m in chat.messages)
     print(f"Reply: {reply.text}\nTool calling worked: {used}\nTook {time.time() - t0:.1f}s on {cfg.llm.ollama_model}")

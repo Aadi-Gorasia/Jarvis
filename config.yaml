@@ -9,6 +9,7 @@ assistant:
 
 gemini:
   model: "gemini-3.8-flash"            # main brain. Any Gemini model that supports function calling works
+  fallback_model: "gemini-2.5-flash"   # used for 5 minutes when the main model says "high demand" (503). Blank = off
   stt_model: "gemini-3.5-flash-lite"   # used to transcribe your voice
   thinking_level: "low"                # Gemini 3.x: minimal | low | medium | high. Blank = model default
 
@@ -18,7 +19,7 @@ wake:
 
 audio:
   device: null               # null = system default mic. Or a device name/index (see: python -m sounddevice)
-  min_rms: 350               # speech-detection floor; tune with ./jarvisctl.sh mic
+  min_rms: 200               # speech-detection floor; tune with ./jarvisctl.sh mic
   noise_multiplier: 2.5      # speech must be this many times louder than room noise
   silence_seconds: 1.0       # how long a pause ends your sentence
   max_seconds: 20            # hard cap on one utterance
@@ -45,6 +46,7 @@ llm:
   jarvis_provider: "gemini"  # who Jarvis talks with: gemini | ollama. Jarvis has ~30 tools; small local models struggle with that
   agents_provider: "ollama"  # who powers the background agents: ollama (on-device, no rate limits) | gemini
   gemini_agents: [operator]  # agents that always use Gemini (they juggle many tools). Add "spreadsheet" if local struggles
+  jarvis_local_fallback: true # if Gemini is down or its quota is used up, Jarvis answers with the on-device model
   fallback_to_gemini: true   # if the local model is down or errors out, retry the task on Gemini
   ollama_url: "http://localhost:11434"
   ollama_model: "nemotron-3-nano:4b"   # fits a 16 GB Mac. The 30b version needs about 24 GB
