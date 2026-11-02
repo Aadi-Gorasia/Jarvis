@@ -19,4 +19,5 @@ def load_config(path=None):
     cfg_path = Path(path) if path else PROJECT_ROOT / "config.yaml"
     cfg = _ns(yaml.safe_load(cfg_path.read_text()) or {})
     cfg.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    cfg.elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
     return cfg

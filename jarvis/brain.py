@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import datetime
 
-from google.genai import types
+from . import llm
 
 log = logging.getLogger("jarvis.brain")
 
@@ -47,22 +47,9 @@ class Brain:
         )
 
     def _new_chat(self) -> None:
-        def build(with_thinking: bool):
-            kwargs = dict(
-                system_instruction=self._system_prompt(),
-                tools=self.tools,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=8),
-            )
-            if with_thinking:
-                kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=self.cfg.gemini.thinking_level)
-            return self.client.chats.create(model=self.cfg.gemini.model, config=types.GenerateContentConfig(**kwargs))
-
-        try:
-            self.chat = build(self.use_thinking)
-        except Exception as exc:  # older SDK without thinking_level, etc.
-            log.warning("thinking config rejected (%s); continuing without it", exc)
-            self.use_thinking = False
-            self.chat = build(False)
+        level = self.cfg.gemini.thinking_level if self.use_thinking else None
+        self.chat = llm.make_chat(self.client, self.cfg.gemini.model, self._system_prompt(), self.tools, 8,
+                                  level, provider=self.cfg.llm.jarvis_provider, cfg=self.cfg)
 
     def ask(self, text: str) -> str:
         now = time.time()

@@ -11,11 +11,29 @@ mic ─▶ wake word (local) ─▶ Jarvis (Gemini): chats, quick actions, deleg
                  each = its own Gemini loop with tools: files, shell, Python, Excel, web, screen control
 ```
 
+## Upgrading from an earlier version
+
+Unzip the new version next to the old one, copy your old `.env` file into it, then run `./install.sh` again (it reuses `.env`, asks for an ElevenLabs key, pulls the local model, and re-registers the background service). Your memory and task history in `~/.jarvis/` are kept.
+
 ## Install (macOS, Python 3.10+)
 
 1. Get a free API key at https://aistudio.google.com
 2. `cd jarvis && ./install.sh` (builds the environment, downloads the wake-word model, asks for your key, asks for mic permission, registers the auto-start service).
 3. Grant the permissions macOS asks for over time: Microphone, and for the agents' hands: **Accessibility** and **Screen Recording** (System Settings > Privacy & Security) for the app that launches Jarvis, plus Automation prompts the first time an agent controls an app.
+
+## Voice: ElevenLabs
+
+Put `ELEVENLABS_API_KEY=...` in `.env` (the installer asks for it). Jarvis then speaks with ElevenLabs (`tts.engine: elevenlabs`), streaming the audio so it starts almost immediately. Choose your voice by pasting its ID into `tts.elevenlabs_voice_id`. Replies longer than `tts.elevenlabs_max_chars` and any ElevenLabs failure fall back to the free Mac voice, so a quota or network problem never leaves Jarvis mute. Optional: `stt.provider: elevenlabs` uses ElevenLabs Scribe to transcribe you instead of Gemini. Test with `./jarvisctl.sh voice`.
+
+## On-device models (no rate limits)
+
+Background agents run on a local model through [Ollama](https://ollama.com) by default (`llm.agents_provider: ollama`, model `nemotron-3-nano:4b`, about 3 GB, fine for a 16 GB Mac). Jarvis himself stays on Gemini: his chats are a handful of requests, and a small model struggles with his ~30 tools.
+
+1. Install Ollama from ollama.com and open it once (it then runs in the menu bar).
+2. `ollama pull nemotron-3-nano:4b` (the installer does this if Ollama is present).
+3. `./jarvisctl.sh local` checks the model loads and can call a tool.
+
+Know the limits: a 4B model is much weaker than Gemini at long, multi-step jobs, and a fanless laptop slows down under sustained load. Agents on the local engine run one at a time (`llm.local_parallel`). Safety nets: if Ollama is down or errors, the task automatically retries on Gemini (`llm.fallback_to_gemini`), the `operator` agent always uses Gemini (`llm.gemini_agents`), and you can say "use Gemini for this" to force it per task. If the spreadsheet agent makes mistakes locally, add `spreadsheet` to `gemini_agents`. The 30B Nemotron needs about 24 GB, too much for 16 GB. Web search and screen understanding still call Gemini, a few requests per use.
 
 ## What you can say
 
@@ -47,6 +65,8 @@ Honest limits: `run_python` and `shell` are policed by pattern checks, not a san
 ./jarvisctl.sh text     # type to Jarvis instead of speaking (best first test)
 ./jarvisctl.sh run      # foreground with verbose logs
 ./jarvisctl.sh mic      # live mic levels, to tune audio.min_rms
+./jarvisctl.sh voice    # hear the configured voice
+./jarvisctl.sh local    # test the on-device model
 ./uninstall.sh          # remove auto-start
 ```
 Logs: `~/Library/Logs/jarvis.log`. Memory, agents and task records: `~/.jarvis/`. Running tasks do not survive a restart; finished ones are kept.
@@ -56,6 +76,8 @@ Logs: `~/Library/Logs/jarvis.log`. Memory, agents and task records: `~/.jarvis/`
 | Want | Change |
 |---|---|
 | Newer Gemini model | `gemini.model`, `agents.model` |
+| Different local model | `llm.ollama_model` (any Ollama model that supports tools) |
+| Agents on Gemini instead of local | `llm.agents_provider: gemini` |
 | More/fewer agents at once | `agents.max_concurrent` (Gemini rate limits apply; the free tier is tight) |
 | Agents work longer per task | `agents.max_steps` |
 | Safer / freer agents | `agents.permission_mode` |
@@ -80,5 +102,5 @@ jarvis/
   brain.py       Jarvis's Gemini session, personality, delegation rules
   agents/        definitions.py (roles), manager.py (parallel tasks), approvals.py
   tools/         policy.py (permissions) + power/excel/gui/web/system/file/memory/agent tools
-  audio.py  speech.py  llm.py  memory.py  config.py  util.py
+  audio.py  speech.py  llm.py  local_llm.py  memory.py  config.py  util.py
 ```

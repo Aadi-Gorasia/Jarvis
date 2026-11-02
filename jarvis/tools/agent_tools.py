@@ -3,10 +3,10 @@ from .base import ctx, current_task, tool
 
 
 @tool
-def delegate_task(agent: str, brief: str) -> str:
-    """Hand a job to a background agent and return immediately; the agent works in parallel and Jarvis announces when it finishes. Write a complete, self-contained brief: goal, file names or paths, formats, constraints, what 'done' looks like. agent is one of the available agent names."""
+def delegate_task(agent: str, brief: str, engine: str = "") -> str:
+    """Hand a job to a background agent and return immediately; the agent works in parallel and Jarvis announces when it finishes. Write a complete, self-contained brief: goal, file names or paths, formats, constraints, what 'done' looks like. agent is one of the available agent names. Leave engine empty normally; use 'gemini' to force the stronger cloud model for a hard job, or 'ollama' for the on-device model."""
     parent = current_task()
-    t = ctx.manager.spawn(agent, brief, parent=parent.id if parent else 0, depth=parent.depth + 1 if parent else 0)
+    t = ctx.manager.spawn(agent, brief, parent=parent.id if parent else 0, depth=parent.depth + 1 if parent else 0, engine=engine)
     return f"Task {t.id} started with the {t.agent} agent."
 
 

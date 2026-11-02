@@ -44,6 +44,7 @@ class Task:
     started: float = 0.0
     finished: float = 0.0
     cancelled: bool = False
+    engine: str = ""          # "" = automatic | gemini | ollama
     result: str = ""
     log: list = field(default_factory=list)
 
@@ -62,6 +63,7 @@ class AgentManager:
         self.lock = threading.Lock()
         self.tasks: dict = {}
         self.defs: dict = {**BUILTIN, **load_custom()}
+        self.local_sem = threading.Semaphore(int(cfg.llm.local_parallel))
         ids = [int(p.stem) for p in TASK_DIR.glob("*.json") if p.stem.isdigit()]
         self._next = max(ids, default=0) + 1
 
@@ -84,14 +86,14 @@ class AgentManager:
         return True
 
     # ── tasks ────────────────────────────────────────────────────
-    def spawn(self, agent: str, brief: str, parent: int = 0, depth: int = 0) -> Task:
+    def spawn(self, agent: str, brief: str, parent: int = 0, depth: int = 0, engine: str = "") -> Task:
         name = slug(agent)
         if name not in self.defs:
             raise ValueError(f"unknown agent '{agent}'. Available: {', '.join(self.defs)}")
         if depth > self.cfg.agents.max_delegation_depth:
             raise ValueError("delegation depth limit reached; do this work yourself")
         with self.lock:
-            task = Task(self._next, name, brief, parent, depth)
+            task = Task(self._next, name, brief, parent, depth, engine=engine.strip().lower())
             self._next += 1
             self.tasks[task.id] = task
         self.pool.submit(self._run, task)
@@ -126,7 +128,26 @@ class AgentManager:
             self._persist(task)
             self._announce(task)
 
+    def _engine_for(self, task: Task) -> str:
+        if task.engine in ("gemini", "ollama"):
+            return task.engine
+        if task.agent in (self.cfg.llm.gemini_agents or []):
+            return "gemini"
+        return self.cfg.llm.agents_provider
+
     def _work(self, defn: AgentDef, task: Task) -> str:
+        engine = self._engine_for(task)
+        task.note(f"engine: {engine}")
+        try:
+            return self._run_engine(defn, task, engine)
+        except Exception as exc:
+            if engine == "ollama" and self.cfg.llm.fallback_to_gemini and not task.cancelled:
+                log.warning("task %s: local model failed (%s); retrying on Gemini", task.id, exc)
+                task.note(f"local model failed ({str(exc)[:100]}); retrying on Gemini")
+                return self._run_engine(defn, task, "gemini")
+            raise
+
+    def _run_engine(self, defn: AgentDef, task: Task, engine: str) -> str:
         acfg = self.cfg.agents
         facts = "\n".join(f"- {t}: {d}" for t, d in self.memory.all_facts()) or "(none)"
         system = AGENT_PROMPT.format(agent=defn.name, workspace=policy.workspace(), prompt=defn.prompt,
@@ -135,7 +156,18 @@ class AgentManager:
         level = acfg.thinking_level or None
 
         def start(think_level):
-            return llm.make_chat(self.client, acfg.model, system, tools, acfg.max_steps, think_level)
+            return llm.make_chat(self.client, acfg.model, system, tools, acfg.max_steps, think_level,
+                                 provider=engine, cfg=self.cfg)
+
+        wrap_up = ("Stop using tools. In two to four plain sentences say what you completed, "
+                   "where the output is, and what remains.")
+        if engine == "ollama":
+            with self.local_sem:  # a laptop chip can only think about so much at once
+                chat = start(None)
+                text = chat.send_message(task.brief).text.strip()
+                if not text:
+                    text = chat.send_message(wrap_up).text.strip()
+            return text or "Finished, but no summary was produced. Check the task log."
 
         chat = start(level)
         try:
@@ -148,8 +180,7 @@ class AgentManager:
                 raise
         text = (resp.text or "").strip()
         if not text:  # ran out of steps mid tool-use: ask for a wrap-up
-            resp = llm.with_retry(lambda: chat.send_message(
-                "Stop using tools. In two to four plain sentences say what you completed, where the output is, and what remains."))
+            resp = llm.with_retry(lambda: chat.send_message(wrap_up))
             text = (resp.text or "").strip() or "Finished, but no summary was produced. Check the task log."
         return text
 

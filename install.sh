@@ -32,6 +32,19 @@ if [ ! -f .env ]; then
   chmod 600 .env
 fi
 
+if ! grep -q '^ELEVENLABS_API_KEY=' .env; then
+  read -r -s -p "ElevenLabs API key for Jarvis's voice (press Enter to skip and use the Mac voice): " EK; echo
+  if [ -n "$EK" ]; then printf 'ELEVENLABS_API_KEY=%s\n' "$EK" >> .env; fi
+fi
+
+MODEL="$(./venv/bin/python -c 'from jarvis.config import load_config; print(load_config().llm.ollama_model)')"
+if command -v ollama >/dev/null 2>&1; then
+  echo "==> Downloading the on-device model ($MODEL), about 3 GB"
+  ollama pull "$MODEL" || echo "   (could not pull it now; run: ollama pull $MODEL)"
+else
+  echo "==> Ollama is not installed. Get it from https://ollama.com, open it once, then run: ollama pull $MODEL"
+fi
+
 echo "==> Microphone permission: speak for a few seconds and approve the macOS prompt if it appears"
 ./venv/bin/python -m jarvis.main --test-mic || true
 

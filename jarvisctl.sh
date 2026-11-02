@@ -12,6 +12,8 @@ case "${1:-status}" in
   logs)    tail -f "$HOME/Library/Logs/jarvis.log" ;;
   run)     "$0" stop; exec ./venv/bin/python -m jarvis.main -v ;;   # foreground, for debugging
   text)    exec ./venv/bin/python -m jarvis.main --text ;;          # type instead of speak
+  local)   exec ./venv/bin/python -m jarvis.main --test-local ;;       # check the on-device model
+  voice)   exec ./venv/bin/python -m jarvis.main --test-voice ;;       # hear the configured voice
   mic)     exec ./venv/bin/python -m jarvis.main --test-mic ;;
-  *)       echo "usage: $0 {start|stop|restart|status|logs|run|text|mic}" ;;
+  *)       echo "usage: $0 {start|stop|restart|status|logs|run|text|mic|local|voice}" ;;
 esac

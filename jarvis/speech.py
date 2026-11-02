@@ -4,6 +4,7 @@ import subprocess
 import threading
 
 import numpy as np
+import requests
 import sounddevice as sd
 from google.genai import types
 
@@ -15,6 +16,7 @@ log = logging.getLogger("jarvis.speech")
 class Speaker:
     def __init__(self, cfg, client, mic=None, mute: bool = False):
         self.cfg = cfg.tts
+        self.el_key = cfg.elevenlabs_key
         self.client = client
         self.mic = mic
         self.mute = mute
@@ -29,7 +31,11 @@ class Speaker:
             print(f"Jarvis: {text}")
             return
         with self._lock:
-            ok = self._gemini(text) if self.cfg.engine == "gemini" else False
+            ok = False
+            if self.cfg.engine == "elevenlabs":
+                ok = self._elevenlabs(text)
+            elif self.cfg.engine == "gemini":
+                ok = self._gemini(text)
             if not ok:
                 self._mac_say(text)
             if self.mic is not None:
@@ -40,6 +46,39 @@ class Speaker:
             ["say", "-v", self.cfg.mac_voice, "-r", str(self.cfg.mac_rate), "-f", "-"],
             input=text.encode("utf-8"), check=False,
         )
+
+    def _elevenlabs(self, text: str) -> bool:
+        c = self.cfg
+        if not self.el_key:
+            log.warning("ELEVENLABS_API_KEY is not set; using the Mac voice")
+            return False
+        if len(text) > c.elevenlabs_max_chars:
+            return False  # long reply: save credits, use the free voice
+        played = False
+        try:
+            with requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{c.elevenlabs_voice_id}/stream",
+                params={"output_format": "pcm_24000"},
+                headers={"xi-api-key": self.el_key, "Content-Type": "application/json"},
+                json={"text": text, "model_id": c.elevenlabs_model},
+                stream=True, timeout=30,
+            ) as r:
+                if r.status_code != 200:
+                    log.warning("ElevenLabs error %s: %s", r.status_code, r.text[:200])
+                    return False
+                leftover = b""
+                with sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16") as out:
+                    for chunk in r.iter_content(4096):  # play while it downloads
+                        data = leftover + chunk
+                        n = len(data) // 2 * 2
+                        if n:
+                            out.write(data[:n])
+                            played = True
+                        leftover = data[n:]
+            return True
+        except Exception as exc:
+            log.warning("ElevenLabs TTS failed (%s)", exc)
+            return played  # if some audio already played, don't repeat it in another voice
 
     def _gemini(self, text: str) -> bool:
         try:
@@ -74,8 +113,24 @@ class Transcriber:
     def __init__(self, cfg, client):
         self.model = cfg.gemini.stt_model
         self.client = client
+        self.provider = cfg.stt.provider
+        self.el_model = cfg.stt.elevenlabs_model
+        self.el_key = cfg.elevenlabs_key
 
     def transcribe(self, wav_bytes: bytes) -> str:
+        if self.provider == "elevenlabs" and self.el_key:
+            try:
+                r = requests.post("https://api.elevenlabs.io/v1/speech-to-text",
+                                  headers={"xi-api-key": self.el_key},
+                                  data={"model_id": self.el_model, "tag_audio_events": "false"},
+                                  files={"file": ("speech.wav", wav_bytes, "audio/wav")}, timeout=30)
+                r.raise_for_status()
+                return (r.json().get("text") or "").strip()
+            except Exception as exc:
+                log.warning("ElevenLabs STT failed (%s); using Gemini", exc)
+        return self._gemini(wav_bytes)
+
+    def _gemini(self, wav_bytes: bytes) -> str:
         try:
             resp = self.client.models.generate_content(
                 model=self.model,
