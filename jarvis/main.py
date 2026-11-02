@@ -13,6 +13,7 @@ def main() -> None:
     ap.add_argument("--test-local", action="store_true", help="check the on-device model (Ollama) and tool calling")
     ap.add_argument("--test-voice", action="store_true", help="speak a test line with the configured voice")
     ap.add_argument("--test-wake", action="store_true", help="live wake-word scores while you say Hey Jarvis")
+    ap.add_argument("--doctor", action="store_true", help="check everything and say what to fix")
     ap.add_argument("--config", help="path to an alternative config.yaml")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -23,6 +24,10 @@ def main() -> None:
     if args.test_mic:
         from .audio import mic_test
         mic_test(device=cfg.audio.device)
+        return
+    if args.doctor:
+        from .doctor import run_doctor
+        run_doctor(cfg)
         return
     if args.test_wake:
         from .audio import wake_test
@@ -41,6 +46,10 @@ def main() -> None:
     if not cfg.api_key:
         sys.exit("No Gemini API key found. Put GEMINI_API_KEY=... in the .env file next to config.yaml.")
 
+    if not args.text:
+        from .util import acquire_single_instance
+        if not acquire_single_instance():
+            sys.exit("Jarvis is already running (the menu bar app?). Quit it first: ./jarvisctl.sh stop")
     from .assistant import Jarvis
     jarvis = Jarvis(cfg, text_mode=args.text)
     try:

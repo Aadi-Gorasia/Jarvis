@@ -1,5 +1,6 @@
 """Gemini chat session with automatic tool (function) calling."""
 import logging
+import re
 import time
 from datetime import datetime
 
@@ -26,6 +27,27 @@ Things you know about the user:
 # the few tools the small on-device backup model gets (a 4B model can't juggle all of them)
 LOCAL_TOOLS = {"get_current_time", "get_weather", "set_timer", "open_app", "open_url", "set_volume",
                "media_control", "system_status", "delegate_task", "list_tasks", "task_result", "resolve_approval"}
+
+
+_BOUNDARY = re.compile(r"(?<=[.!?…])\s+|\n+")
+
+
+def sentences(pieces):
+    """Group streamed text into sentences so speech can start after the first one."""
+    buf, first = "", True
+    for piece in pieces:
+        buf += piece
+        while True:
+            min_len = 14 if first else 28          # start talking early, then use natural-length sentences
+            cut = next((m for m in _BOUNDARY.finditer(buf) if m.start() >= min_len), None)
+            if cut is None:
+                break
+            out, buf = buf[: cut.start()].strip(), buf[cut.end():]
+            if out:
+                first = False
+                yield out
+    if buf.strip():
+        yield buf.strip()
 
 
 class Brain:
@@ -101,6 +123,63 @@ class Brain:
         self.memory.log("assistant", reply)
         return reply
 
+    def _begin(self, text: str):
+        """Shared start of a turn: session bookkeeping, then which providers to try in order."""
+        now = time.time()
+        idle = now - self.last_used > self.cfg.assistant.session_idle_seconds
+        if idle:
+            self.chats.clear()
+        self.seed = [] if idle else self.memory.recent(8)
+        self.last_used = now
+        self.memory.log("user", text)
+        usable = [p for p in self.chain if self._available(p)]
+        return [p for p in usable if self.cooldown.get(p, 0) <= now] or usable  # all cooling? try anyway
+
+    def ask_stream(self, text: str):
+        """Yield the reply in pieces as the model produces it (so speech can begin immediately)."""
+        parts, answered = [], False
+        for provider in self._begin(text):
+            for attempt in (0, 1):
+                yielded = False
+                try:
+                    for piece in self._stream(provider, text):
+                        if piece:
+                            yielded = True
+                            parts.append(piece)
+                            yield piece
+                    answered, self.last_provider = True, provider
+                    if provider != self.chain[0]:
+                        log.info("Answered by %s", provider)
+                    break
+                except Exception as exc:
+                    self.chats.pop(provider, None)
+                    if attempt == 0 and not yielded and provider == "gemini" and self.use_thinking and "think" in str(exc).lower():
+                        self.use_thinking = False   # this model has no thinking_level: retry once without it
+                        continue
+                    log.error("%s failed: %s", provider, str(exc)[:200])
+                    self.cooldown[provider] = time.time() + self._cooldown_for(exc)
+                    answered = yielded               # words already spoken can't be taken back
+                    break
+            if answered:
+                break
+        if not parts:
+            parts.append("I can't reach any of my language models right now.")
+            yield parts[0]
+        self.memory.log("assistant", "".join(parts))
+
+    def _stream(self, provider: str, text: str):
+        chat = self._chat(provider)
+        if provider == "gemini" and hasattr(chat, "send_message_stream"):
+            got = False
+            for chunk in chat.send_message_stream(text):
+                piece = getattr(chunk, "text", None) or ""
+                got = got or bool(piece)
+                yield piece
+            if got:
+                return
+            self.chats.pop(provider, None)         # stream ended without text (e.g. an unhandled tool call): redo it plainly
+        yield self._send(provider, text)
+
     def _send(self, provider: str, text: str) -> str:
         chat = self._chat(provider)
         try:
@@ -124,4 +203,6 @@ class Brain:
             return 1800     # out of quota: don't bother for 30 minutes
         if any(k in msg for k in ("404", "NOT_FOUND", "401", "403", "invalid_api_key", "PERMISSION")):
             return 3600     # wrong model name or key: needs a config fix
+        if any(k in msg.lower() for k in ("timed out", "timeout", "deadline")):
+            return 60       # too slow right now: skip it for a minute
         return 120          # overloaded or offline: try again in two minutes

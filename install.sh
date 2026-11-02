@@ -99,4 +99,5 @@ else
 fi
 
 echo
+./venv/bin/python -m jarvis.main --doctor || true
 echo "Look for the microphone icon in your menu bar, then say 'Hey Jarvis'. Manage it with ./jarvisctl.sh  (status | logs | restart | stop | text | mic)"

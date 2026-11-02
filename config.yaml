@@ -1,5 +1,5 @@
 # ───────────── JARVIS configuration ─────────────
-# Edit, then run:  ./jarvisctl.sh restart
+# Edit, then run:  ./jarvisctl.sh restart        (problems? run: ./jarvisctl.sh doctor)
 
 assistant:
   name: "Jarvis"
@@ -8,9 +8,10 @@ assistant:
   session_idle_seconds: 600  # forget the current conversation after this much silence
 
 gemini:
-  model: "gemini-3.8-flash"            # main brain. Any Gemini model that supports function calling works
-  stt_model: "gemini-3.5-flash-lite"   # used to transcribe your voice
-  thinking_level: "low"                # Gemini 3.x: minimal | low | medium | high. Blank = model default
+  model: "gemini-3.5-flash-lite"       # Jarvis's conversation brain: chosen for speed
+  stt_model: "gemini-3.5-flash-lite"   # transcribes your voice
+  thinking_level: "minimal"            # minimal | low | medium | high. Less thinking = faster answers
+  timeout_seconds: 12                  # give up on a stuck request after this long and fail over
 
 wake:
   model: "hey_jarvis"        # openWakeWord's built-in "Hey Jarvis"
@@ -18,27 +19,33 @@ wake:
 
 audio:
   device: null               # null = system default mic. Or a device name/index (see: python -m sounddevice)
-  min_rms: 200               # speech-detection floor; tune with ./jarvisctl.sh mic
-  noise_multiplier: 2.5      # speech must be this many times louder than room noise
-  silence_seconds: 1.0       # how long a pause ends your sentence
+  min_rms: 120               # speech must be at least this loud (and 3x the room noise, which Jarvis tracks itself)
+  noise_multiplier: 3.0
+  silence_seconds: 0.8       # a pause this long ends your sentence
   max_seconds: 20            # hard cap on one utterance
-  first_utterance_timeout: 6 # seconds to start talking after the wake word
+  first_utterance_timeout: 10 # seconds to start talking after the wake word
   follow_up_seconds: 6       # stay "awake" this long for follow-up questions
-  wake_sound: false          # play a chime on wake (can clip the first word if you talk right away)
+  wake_sound: false          # chime on wake. The screen halo already tells you Jarvis is listening
+
+halo:
+  enabled: true              # dark vignette around the screen edges while Jarvis listens, thinks and speaks
+  color: [0, 0, 0]           # RGB. Black by default; try [40, 40, 48] for a cooler grey
+  intensity: 0.55            # 0-1: how dark it gets at the very edge
+  thickness: 0.16            # how far it reaches in, as a fraction of the screen's short side
 
 tts:
   engine: "elevenlabs"       # elevenlabs | say | gemini. Falls back to the Mac voice if ElevenLabs fails or has no key
   elevenlabs_voice_id: "JBFqnCBsd6RMkjVDRZzb"   # "George" (premade). Pick yours at elevenlabs.io/app/voice-library
   elevenlabs_model: "eleven_flash_v2_5"          # lowest latency. eleven_multilingual_v2 sounds richer but is slower
-  elevenlabs_max_chars: 500  # longer replies use the free Mac voice, so long answers don't burn your credits
-  mac_voice: "Daniel"        # used as the fallback voice. List: say -v '?'
+  elevenlabs_max_chars: 500  # a longer sentence uses the free Mac voice, so credits last
+  mac_voice: "Daniel"        # the fallback voice. List: say -v '?'
   mac_rate: 185
   gemini_model: "gemini-2.5-flash-preview-tts"
   gemini_voice: "Charon"
   gemini_style: "Say in a calm, dry, British butler tone"
 
 stt:
-  provider: "gemini"         # gemini | elevenlabs (Scribe). Falls back to Gemini if ElevenLabs fails
+  provider: "gemini"         # gemini | elevenlabs (Scribe). Each falls back to the other if it fails
   elevenlabs_model: "scribe_v1"
 
 llm:
@@ -58,12 +65,12 @@ llm:
 
 tools:
   disabled: []               # Jarvis's own quick tools to switch off, e.g. [describe_screen, read_clipboard]
-  allowed_roots: ["~"]       # folders file tools may touch
+  allowed_roots: ["~"]       # folders the quick file tools may touch
 
 agents:
   permission_mode: "trusted"   # ask = approve every action | trusted = free, but risky actions need your OK | full = no prompts
   workspace: "~/Jarvis Workspace"   # agents' default working folder; also holds backups/ and tasks/ reports
-  model: "gemini-3.8-flash"
+  model: "gemini-3.8-flash"    # the stronger model agents use when they run on Gemini
   thinking_level: "medium"     # blank = model default
   max_concurrent: 6            # agents working at the same time (extra tasks queue)
   max_steps: 40                # tool calls one agent may make per task

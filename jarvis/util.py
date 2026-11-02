@@ -42,3 +42,20 @@ def notify(title: str, message: str) -> None:
                        capture_output=True, timeout=10)
     except Exception:
         pass
+
+
+_lock_handle = None
+
+
+def acquire_single_instance() -> bool:
+    """Only one Jarvis may own the microphone. Returns False if another copy is already running."""
+    import fcntl
+    global _lock_handle
+    _lock_handle = open(DATA_DIR / "jarvis.lock", "w")
+    try:
+        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_handle.write(str(__import__("os").getpid()))
+        _lock_handle.flush()
+        return True
+    except OSError:
+        return False

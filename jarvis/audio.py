@@ -28,6 +28,7 @@ class Microphone:
         self.stream = None
         self._zero_run = 0
         self._warned = False
+        self.ambient = 0.0   # running estimate of the room's noise floor
 
     def open(self):
         self.close()
@@ -58,6 +59,11 @@ class Microphone:
                 log.warning("Microphone is returning pure silence. Check macOS Privacy & Security > Microphone.")
         else:
             self._zero_run = 0
+        rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+        if self.ambient == 0.0 or rms < self.ambient:
+            self.ambient = rms if self.ambient == 0.0 else 0.8 * self.ambient + 0.2 * rms  # drops fast
+        else:
+            self.ambient += 0.002 * (rms - self.ambient)                                   # rises slowly
         return frame
 
     def flush(self):
@@ -157,7 +163,8 @@ class Recorder:
         while True:
             frame = self.mic.read()
             rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-            loud = rms > max(cfg.min_rms, noise * cfg.noise_multiplier)
+            floor = max(noise, getattr(self.mic, "ambient", 0.0))
+            loud = rms > max(cfg.min_rms, floor * cfg.noise_multiplier)
             now = time.monotonic()
             if not started:
                 noise = rms if noise == 0 else 0.9 * noise + 0.1 * rms

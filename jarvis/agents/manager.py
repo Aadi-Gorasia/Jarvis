@@ -213,9 +213,10 @@ class AgentManager:
     def _announce(self, task: Task) -> None:
         if not self.cfg.agents.announce_completion or task.cancelled and task.status == "cancelled" and not task.result:
             return
-        first = task.result.strip().split("\n")[0]
-        if len(first) > 260:
-            first = first[:257] + "..."
+        import re as _re
+        first = _re.split(r"(?<=[.!?])\s", task.result.strip().split("\n")[0])[0]   # first sentence only
+        if len(first) > 180:
+            first = first[:177] + "..."
         verb = {"done": "finished", "failed": "hit a problem on", "cancelled": "stopped"}.get(task.status, "finished")
         notify(f"Jarvis: {task.agent} {verb} task {task.id}", first)
         self.announce(f"The {task.agent} agent {verb} task {task.id}. {first}")

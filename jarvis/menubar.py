@@ -10,7 +10,8 @@ from pathlib import Path
 import rumps
 
 from .config import load_config
-from .util import LOG_PATH, PROJECT_ROOT, notify, setup_logging
+from .halo import Halo
+from .util import LOG_PATH, PROJECT_ROOT, acquire_single_instance, notify, setup_logging
 
 log = logging.getLogger("jarvis.menubar")
 
@@ -40,6 +41,9 @@ class JarvisMenu(rumps.App):
         self.brain_item = rumps.MenuItem("Brain: -")
         self.pause_item = rumps.MenuItem("Pause listening", callback=self.toggle_pause)
         self.agents_menu = rumps.MenuItem("Agents")
+        self.halo = Halo(cfg)
+        self.halo_item = rumps.MenuItem("Screen halo", callback=self.toggle_halo)
+        self.halo_item.state = 1 if self.halo.enabled else 0
         self.mode_menu = rumps.MenuItem("Agent permissions")
         self.mode_items = {}
         for key, label in MODES.items():
@@ -49,8 +53,9 @@ class JarvisMenu(rumps.App):
         self._mark_mode()
         self.menu = [
             self.status_item, self.brain_item, None,
-            self.pause_item, rumps.MenuItem("Type to Jarvis...", callback=self.type_to_jarvis), None,
-            self.agents_menu, self.mode_menu, None,
+            self.pause_item, rumps.MenuItem("Type to Jarvis...", callback=self.type_to_jarvis),
+            rumps.MenuItem("Stop speaking", callback=self.stop_speaking), None,
+            self.agents_menu, self.mode_menu, self.halo_item, None,
             rumps.MenuItem("Open workspace folder", callback=self.open_workspace),
             rumps.MenuItem("Open log", callback=self.open_log), None,
             rumps.MenuItem("Quit Jarvis", callback=self.quit_app),
@@ -58,6 +63,8 @@ class JarvisMenu(rumps.App):
         self._agents_sig = None
         self._timer = rumps.Timer(self.refresh, 0.7)  # UI updates happen on the main thread
         self._timer.start()
+        self._halo_timer = rumps.Timer(self._halo_tick, 1 / 30)
+        self._halo_timer.start()
 
     # ── live status ──────────────────────────────────────────────
     def refresh(self, _sender=None) -> None:
@@ -96,9 +103,26 @@ class JarvisMenu(rumps.App):
         if not tasks and not pending:
             self.agents_menu.add(rumps.MenuItem("No agent tasks yet"))
 
+    def _halo_tick(self, _sender=None) -> None:
+        self.halo.tick(self.jarvis.state)
+
     # ── actions ──────────────────────────────────────────────────
     def toggle_pause(self, _sender) -> None:
         self.jarvis.paused = not self.jarvis.paused
+
+    def stop_speaking(self, _sender) -> None:
+        self.jarvis.speaker.stop()
+
+    def toggle_halo(self, sender) -> None:
+        on = not self.halo.enabled
+        self.halo.set_enabled(on)
+        sender.state = 1 if on else 0
+        cfg_file = PROJECT_ROOT / "config.yaml"
+        try:
+            cfg_file.write_text(re.sub(r"(halo:\s*\n\s*enabled:\s*)(true|false)", rf"\g<1>{'true' if on else 'false'}",
+                                       cfg_file.read_text(), count=1))
+        except OSError:
+            pass
 
     def type_to_jarvis(self, _sender) -> None:
         win = rumps.Window(message="What should Jarvis do?", title="Jarvis", default_text="",
@@ -145,6 +169,9 @@ class JarvisMenu(rumps.App):
 def main() -> None:
     setup_logging()
     cfg = load_config()
+    if not acquire_single_instance():
+        rumps.alert("Jarvis", "Jarvis is already running. Look for its icon in the menu bar.")
+        return
     if not cfg.api_key:
         rumps.alert("Jarvis", "No Gemini API key found. Put GEMINI_API_KEY=... in the .env file next to config.yaml.")
         return

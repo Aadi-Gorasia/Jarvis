@@ -15,7 +15,8 @@ case "${1:-status}" in
   text)    exec ./venv/bin/python -m jarvis.main --text ;;          # type instead of speak
   local)   exec ./venv/bin/python -m jarvis.main --test-local ;;       # check the on-device model
   voice)   exec ./venv/bin/python -m jarvis.main --test-voice ;;       # hear the configured voice
+  doctor)  exec ./venv/bin/python -m jarvis.main --doctor ;;          # check everything, say what to fix
   wake)    exec ./venv/bin/python -m jarvis.main --test-wake ;;        # watch wake-word scores live
   mic)     exec ./venv/bin/python -m jarvis.main --test-mic ;;
-  *)       echo "usage: $0 {start|stop|restart|status|logs|run|menubar|text|mic|wake|local|voice}" ;;
+  *)       echo "usage: $0 {start|stop|restart|status|logs|run|menubar|text|mic|wake|doctor|local|voice}" ;;
 esac
